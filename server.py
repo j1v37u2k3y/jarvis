@@ -962,7 +962,7 @@ def _find_project_dir(project_name: str) -> str | None:
     for p in cached_projects:
         if project_name.lower() in p.get("name", "").lower():
             return p.get("path")
-    # Check common project locations (Desktop may be restricted by macOS TCC)
+    # Check common project locations
     search_dirs = [
         Path.home() / "Desktop",
         Path.home() / "Documents",
@@ -970,6 +970,11 @@ def _find_project_dir(project_name: str) -> str | None:
         Path.home() / "Projects",
     ]
     for search_dir in search_dirs:
+        # Direct path check — works even when macOS TCC blocks directory listing
+        direct = search_dir / project_name
+        if direct.is_dir():
+            return str(direct)
+        # Fall back to directory scan for fuzzy/partial matches
         try:
             for d in search_dir.iterdir():
                 if d.is_dir() and project_name.lower() in d.name.lower():
