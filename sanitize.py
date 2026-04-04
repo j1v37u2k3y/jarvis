@@ -42,3 +42,5 @@ def escape_shell_in_applescript(path: str) -> str:
 ALLOW_DANGEROUS_PERMS = os.getenv("ALLOW_DANGEROUS_PERMISSIONS", "false").lower() == "true"
 DANGEROUS_FLAG = " --dangerously-skip-permissions" if ALLOW_DANGEROUS_PERMS else ""
 DANGEROUS_FLAG_LIST = ["--dangerously-skip-permissions"] if ALLOW_DANGEROUS_PERMS else []
+
+ALLOW_REMOTE_CONTROL = os.getenv("ALLOW_REMOTE_CONTROL", "false").lower() == "true"

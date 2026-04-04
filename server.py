@@ -70,7 +70,13 @@ from memory import (
 from notes_access import create_apple_note, get_recent_notes, read_note
 from planner import BYPASS_PHRASES, TaskPlanner
 from qa import QAAgent
-from sanitize import DANGEROUS_FLAG, DANGEROUS_FLAG_LIST, escape_applescript, escape_shell_in_applescript
+from sanitize import (
+    ALLOW_REMOTE_CONTROL,
+    DANGEROUS_FLAG,
+    DANGEROUS_FLAG_LIST,
+    escape_applescript,
+    escape_shell_in_applescript,
+)
 from screen import describe_screen, format_windows_for_context, get_active_windows
 from suggestions import suggest_followup
 from tracking import SuccessTracker
@@ -1460,7 +1466,7 @@ _AUTH_TOKEN: str = ""
 async def lifespan(application: FastAPI):
     global anthropic_client, cached_projects, _AUTH_TOKEN
     _AUTH_TOKEN = secrets.token_urlsafe(32)
-    log.info(f"Auth token: {_AUTH_TOKEN}")
+    print(f"  Auth token: {_AUTH_TOKEN[:8]}... (use /auth/token endpoint for full token)")
     if ANTHROPIC_API_KEY:
         anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     else:
@@ -2207,15 +2213,26 @@ async def voice_handler(ws: WebSocket):
         except Exception:
             return  # WebSocket already gone
 
+        _VALID_WS_TYPES = {"transcript", "fix_self"}
+        _MAX_TEXT_LENGTH = 10000
+
         while True:
             raw = await ws.receive_text()
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
+                log.warning(f"Malformed WebSocket JSON: {raw[:200]}")
+                continue
+
+            # Validate message type
+            msg_type = msg.get("type")
+            if not isinstance(msg_type, str) or msg_type not in _VALID_WS_TYPES:
+                if msg_type is not None:
+                    log.warning(f"Unknown WebSocket message type: {msg_type}")
                 continue
 
             # ── Fix-self: activate work mode in JARVIS repo ──
-            if msg.get("type") == "fix_self":
+            if msg_type == "fix_self":
                 jarvis_dir = str(Path(__file__).parent)
                 await work_session.start(jarvis_dir)
                 response_text = "Work mode active in my own repo, sir. Tell me what needs fixing."
@@ -2228,10 +2245,18 @@ async def voice_handler(ws: WebSocket):
                     await ws.send_json({"type": "text", "text": response_text})
                 continue
 
-            if msg.get("type") != "transcript" or not msg.get("isFinal"):
+            # transcript type — validate fields
+            if not msg.get("isFinal"):
                 continue
 
-            user_text = apply_speech_corrections(msg.get("text", "").strip())
+            text = msg.get("text", "")
+            if not isinstance(text, str) or len(text) > _MAX_TEXT_LENGTH:
+                log.warning(
+                    f"Invalid transcript: type={type(text).__name__}, len={len(text) if isinstance(text, str) else 'N/A'}"
+                )
+                continue
+
+            user_text = apply_speech_corrections(text.strip())
             if not user_text:
                 continue
 
@@ -2911,6 +2936,10 @@ async def api_save_preferences(body: PreferencesUpdate):
 @app.post("/api/restart", dependencies=[Depends(require_auth)])
 async def api_restart():
     """Restart the JARVIS server."""
+    if not ALLOW_REMOTE_CONTROL:
+        return JSONResponse(
+            status_code=403, content={"error": "Remote control disabled. Set ALLOW_REMOTE_CONTROL=true in .env"}
+        )
     log.info("Restart requested — shutting down in 2 seconds")
 
     async def _restart():
@@ -2925,6 +2954,10 @@ async def api_restart():
 @app.post("/api/fix-self", dependencies=[Depends(require_auth)])
 async def api_fix_self():
     """Enter work mode in the JARVIS repo — JARVIS can now fix himself."""
+    if not ALLOW_REMOTE_CONTROL:
+        return JSONResponse(
+            status_code=403, content={"error": "Remote control disabled. Set ALLOW_REMOTE_CONTROL=true in .env"}
+        )
     jarvis_dir = str(Path(__file__).parent)
     # The work_session is per-WebSocket, so we set a flag that the handler picks up
     # For now, also open Terminal so user can see

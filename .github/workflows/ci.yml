@@ -18,6 +18,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: pip install -r requirements.txt ruff mypy bandit
+      - run: pip install -r requirements-dev.txt
       - run: cd frontend && npm ci
       - run: ./ci check

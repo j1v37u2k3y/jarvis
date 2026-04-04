@@ -66,12 +66,18 @@ run_test() {
 }
 
 run_security() {
-    info "Security Scan (bandit)"
+    info "Security Scan (bandit + pip-audit)"
     # B603/B607: subprocess with shell=False — intentional for osascript/claude
     if bandit -r . -x ./venv,./frontend,./tests -s B603,B607 --severity-level high -q 2>/dev/null; then
         pass "bandit (no high/critical findings)"
     else
         fail "bandit"
+    fi
+
+    if pip-audit -r requirements.txt 2>/dev/null; then
+        pass "pip-audit (no vulnerable dependencies)"
+    else
+        fail "pip-audit"
     fi
 }
 
