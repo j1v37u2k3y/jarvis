@@ -14,10 +14,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/ruff-action@v3
         with:
-          args: check
+          args: check --config pyproject.toml
       - uses: astral-sh/ruff-action@v3
         with:
-          args: format --check
+          args: format --check --config pyproject.toml
 
   typecheck:
     name: Type Check
