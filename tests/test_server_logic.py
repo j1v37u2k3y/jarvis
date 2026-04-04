@@ -374,3 +374,33 @@ class TestRequireAuth:
         with pytest.raises(HTTPException) as exc_info:
             await require_auth(authorization="Basic dXNlcjpwYXNz")
         assert exc_info.value.status_code == 401
+
+
+class TestRemoteControlEndpoints:
+    """Test that restart/fix-self endpoints respect ALLOW_REMOTE_CONTROL."""
+
+    def test_restart_blocked_when_remote_control_disabled(self, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "_AUTH_TOKEN", "")
+        monkeypatch.setattr(server, "ALLOW_REMOTE_CONTROL", False)
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(server.app)
+        resp = client.post("/api/restart")
+        assert resp.status_code == 403
+        assert "Remote control disabled" in resp.json()["error"]
+
+    def test_fix_self_blocked_when_remote_control_disabled(self, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "_AUTH_TOKEN", "")
+        monkeypatch.setattr(server, "ALLOW_REMOTE_CONTROL", False)
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(server.app)
+        resp = client.post("/api/fix-self")
+        assert resp.status_code == 403
+        assert "Remote control disabled" in resp.json()["error"]

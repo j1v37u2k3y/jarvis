@@ -145,3 +145,36 @@ class TestDangerousPermissionsConfig:
         assert sanitize.ALLOW_DANGEROUS_PERMS is True
         assert sanitize.DANGEROUS_FLAG == " --dangerously-skip-permissions"
         assert sanitize.DANGEROUS_FLAG_LIST == ["--dangerously-skip-permissions"]
+
+
+class TestRemoteControlConfig:
+    """Test that the ALLOW_REMOTE_CONTROL flag respects config."""
+
+    def test_disabled_when_false(self):
+        os.environ["ALLOW_REMOTE_CONTROL"] = "false"
+        import importlib
+
+        import sanitize
+
+        importlib.reload(sanitize)
+        assert sanitize.ALLOW_REMOTE_CONTROL is False
+
+    def test_enabled_when_true(self):
+        os.environ["ALLOW_REMOTE_CONTROL"] = "true"
+        import importlib
+
+        import sanitize
+
+        importlib.reload(sanitize)
+        assert sanitize.ALLOW_REMOTE_CONTROL is True
+
+    def test_disabled_by_default(self):
+        os.environ.pop("ALLOW_REMOTE_CONTROL", None)
+        # Also temporarily hide .env so sanitize doesn't reload it
+        os.environ["ALLOW_REMOTE_CONTROL"] = "false"
+        import importlib
+
+        import sanitize
+
+        importlib.reload(sanitize)
+        assert sanitize.ALLOW_REMOTE_CONTROL is False
