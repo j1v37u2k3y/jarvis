@@ -5,9 +5,7 @@ Exercises the browser pipeline: search, visit, screenshot.
 Skips if no network or Playwright browsers not installed.
 """
 
-import asyncio
 import os
-import shutil
 import socket
 import sys
 import tempfile
@@ -18,7 +16,7 @@ import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from browser import JarvisBrowser, SearchResult, PageContent
+from browser import JarvisBrowser, PageContent, SearchResult
 
 
 def _has_network() -> bool:
