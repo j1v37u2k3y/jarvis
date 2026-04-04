@@ -69,17 +69,16 @@ cd frontend && npm install && cd ..
 # 5. Generate SSL certificates (needed for secure WebSocket)
 openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj '/CN=localhost'
 
-# 6. Start the backend (Terminal 1)
-python server.py
+# 6. Start JARVIS (backend + frontend in one command)
+./jarvis
 
-# 7. Start the frontend (Terminal 2)
-cd frontend && npm run dev
-
-# 8. Open Chrome
+# 7. Open Chrome
 open http://localhost:5173
 ```
 
 Click the page once to enable audio, then speak. JARVIS will respond.
+
+> **Note:** `./jarvis` starts both the backend and frontend together. Press `Ctrl+C` to stop both. You can also run them separately with `python server.py` and `cd frontend && npm run dev` in two terminals.
 
 ## Configuration
 
