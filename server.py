@@ -39,6 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from ab_testing import ABTester
 from actions import (
     _generate_project_name,
     open_browser,
@@ -51,6 +52,7 @@ from calendar_access import (
 )
 from calendar_access import refresh_cache as refresh_calendar_cache
 from dispatch_registry import DispatchRegistry
+from learning import UsageLearner
 from mail_access import (
     format_unread_summary,
     get_unread_count,
@@ -80,7 +82,7 @@ from sanitize import (
 from screen import describe_screen, format_windows_for_context, get_active_windows
 from suggestions import suggest_followup
 from tracking import SuccessTracker
-from work_mode import WorkSession, is_casual_question
+from work_mode import WorkSession, is_casual_question, session_manager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -318,6 +320,7 @@ class ClaudeTask:
     error: str = ""
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    experiment_id: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -923,7 +926,17 @@ async def _execute_research(target: str, ws=None):
 
 
 async def _focus_terminal_window(project_name: str):
-    """Bring a Terminal window matching the project name to front."""
+    """Bring a Terminal window for the project to front.
+
+    Uses tmux attach when a session exists, falls back to AppleScript window search.
+    """
+    # Try tmux first
+    session = session_manager.find_session(project_name)
+    if session and await session.is_alive():
+        await session_manager.attach_in_terminal(session.name)
+        return
+
+    # Fallback: search Terminal windows by name
     escaped = escape_applescript(project_name)
     script = f'''
 tell application "Terminal"
@@ -1279,6 +1292,8 @@ async def generate_response(
 task_manager = ClaudeTaskManager(max_concurrent=3)
 qa_agent = QAAgent()
 success_tracker = SuccessTracker()
+ab_tester = ABTester()
+usage_learner = UsageLearner()
 anthropic_client: anthropic.AsyncAnthropic | None = None
 cached_projects: list[dict] = []
 recently_built: list[dict] = []  # [{"name": str, "path": str, "time": float}]
@@ -1599,6 +1614,12 @@ async def api_list_projects():
     return {"projects": cached_projects}
 
 
+@app.get("/api/sessions", dependencies=[Depends(require_auth)])
+async def api_list_sessions():
+    sessions = await session_manager.list_sessions()
+    return {"sessions": sessions}
+
+
 # -- Fast Action Detection (no LLM call) -----------------------------------
 
 
@@ -1742,6 +1763,20 @@ def detect_action_fast(text: str) -> dict | None:
         ]
     ):
         return {"action": "check_dispatch"}
+
+    # Session check
+    if any(
+        p in t
+        for p in [
+            "what sessions",
+            "active sessions",
+            "running sessions",
+            "list sessions",
+            "what's running",
+            "whats running",
+        ]
+    ):
+        return {"action": "check_sessions"}
 
     # Task list check
     if any(
@@ -2492,6 +2527,8 @@ async def voice_handler(ws: WebSocket):
                                     response_text = f"{name} ran into problems, sir."
                                 else:
                                     response_text = f"{name} is {status}, sir."
+                        elif action["action"] == "check_sessions":
+                            response_text = session_manager.format_for_voice()
                         elif action["action"] == "check_tasks":
                             tasks = get_open_tasks()
                             response_text = format_tasks_for_voice(tasks)
@@ -2964,8 +3001,19 @@ async def api_fix_self():
             status_code=403, content={"error": "Remote control disabled. Set ALLOW_REMOTE_CONTROL=true in .env"}
         )
     jarvis_dir = str(Path(__file__).parent)
-    # The work_session is per-WebSocket, so we set a flag that the handler picks up
-    # For now, also open Terminal so user can see
+
+    # Launch in tmux session for monitoring, open Terminal attached to it
+    from tmux_sessions import TMUX_AVAILABLE
+
+    if TMUX_AVAILABLE:
+        cmd = f"claude{DANGEROUS_FLAG}"
+        tmux = await session_manager.create_session("jarvis-self", jarvis_dir, command=cmd, mode="interactive")
+        if tmux:
+            await session_manager.attach_in_terminal(tmux.name)
+            log.info("Work mode: JARVIS repo opened for self-improvement (tmux)")
+            return {"status": "work_mode_active", "path": jarvis_dir}
+
+    # Fallback: AppleScript
     script = (
         'tell application "Terminal"\n'
         "    activate\n"

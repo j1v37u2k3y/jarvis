@@ -1,40 +1,46 @@
 """
-JARVIS Work Mode — persistent claude -p sessions tied to projects.
+JARVIS Work Mode — persistent Claude Code sessions via tmux.
 
 JARVIS can connect to any project directory and maintain a conversation
-with Claude Code. Uses --continue to resume the most recent session
-in that directory, so context persists across messages.
+with Claude Code inside a named tmux session. Context persists naturally
+across messages (no --continue flag needed).
 
-The user sees Claude Code working in their Terminal window.
-JARVIS reads the responses via subprocess, summarizes, and reports back.
+Users can attach to any session: `tmux attach -t jarvis-{project}`
+JARVIS reads output via `tmux capture-pane` and sends input via `tmux send-keys`.
 """
 
 import asyncio
 import json
 import logging
 import shutil
+import uuid
 from pathlib import Path
 
-from sanitize import DANGEROUS_FLAG_LIST
+from sanitize import DANGEROUS_FLAG
+from tmux_sessions import TMUX_AVAILABLE, TmuxSession, TmuxSessionManager
 
 log = logging.getLogger("jarvis.work_mode")
 
 SESSION_FILE = Path(__file__).parent / "data" / "active_session.json"
 
+# Shared session manager — imported by server.py
+session_manager = TmuxSessionManager()
+
 
 class WorkSession:
-    """A claude -p session tied to a project directory.
+    """A Claude Code session tied to a project directory.
 
-    Each project gets its own session. JARVIS can switch between projects
-    and --continue picks up where the last message left off.
+    Uses tmux when available, falls back to subprocess pipes.
     """
 
     def __init__(self):
         self._active = False
         self._working_dir: str | None = None
         self._project_name: str | None = None
-        self._message_count = 0  # Track if this is first message (no --continue)
-        self._status = "idle"  # idle, working, done
+        self._message_count = 0
+        self._status = "idle"
+        self._tmux: TmuxSession | None = None
+        self._tmux_name: str | None = None
 
     @property
     def active(self) -> bool:
@@ -55,14 +61,85 @@ class WorkSession:
         self._active = True
         self._message_count = 0
         self._status = "idle"
-        log.info(f"Work mode started: {self._project_name} ({working_dir})")
+
+        if TMUX_AVAILABLE:
+            # Check if there's already a tmux session for this project
+            existing = session_manager.find_session(self._project_name)
+            if existing and await existing.is_alive():
+                self._tmux = existing
+                self._tmux_name = existing.name
+                log.info(f"Work mode: reattached to existing tmux session {existing.name}")
+                return
+
+            # Create new tmux session with interactive claude
+            cmd = f"claude{DANGEROUS_FLAG}"
+            tmux = await session_manager.create_session(
+                self._project_name, working_dir, command=cmd, mode="interactive"
+            )
+            if tmux:
+                self._tmux = tmux
+                self._tmux_name = tmux.name
+                log.info(f"Work mode started (tmux): {self._project_name} ({working_dir})")
+                # Give claude a moment to start up
+                await asyncio.sleep(2)
+                return
+
+        log.info(f"Work mode started (subprocess fallback): {self._project_name} ({working_dir})")
 
     async def send(self, user_text: str) -> str:
-        """Send a message to claude -p and get the full response.
+        """Send a message and get the response.
 
-        First message in a session: fresh claude -p
-        Subsequent messages: claude -p --continue (resumes last session in dir)
+        With tmux: sends via send_keys, polls capture_output for response.
+        Without tmux: falls back to subprocess claude -p.
         """
+        self._status = "working"
+
+        if self._tmux and await self._tmux.is_alive():
+            return await self._send_tmux(user_text)
+        return await self._send_subprocess(user_text)
+
+    async def _send_tmux(self, user_text: str) -> str:
+        """Send via tmux session — type the prompt, wait for response."""
+        assert self._tmux is not None
+        assert self._working_dir is not None
+
+        sentinel = f"JARVIS_DONE_{uuid.uuid4().hex[:8]}"
+
+        # Write prompt to a temp file to avoid shell escaping issues
+        prompt_file = Path(self._working_dir) / ".jarvis_prompt.txt"
+        prompt_file.write_text(user_text)
+
+        # Capture output before sending so we can diff later
+        before = await self._tmux.capture_output()
+        before_len = len(before)
+
+        # Send the prompt file content via stdin pipe, with sentinel
+        await self._tmux.send_keys(
+            f"cat .jarvis_prompt.txt | claude -p --output-format text{DANGEROUS_FLAG}; echo '{sentinel}'"
+        )
+
+        # Wait for sentinel
+        try:
+            output = await self._tmux.wait_for_sentinel(sentinel, timeout=300, poll_interval=2.0)
+            # Extract just the new output (after what was there before)
+            response = output[before_len:].strip() if len(output) > before_len else output.strip()
+
+            self._message_count += 1
+            self._status = "done"
+            if self._tmux_name:
+                session_manager.update_status(self._tmux_name, "idle")
+            log.info(f"Claude Code response for {self._project_name} ({len(response)} chars)")
+            return response
+
+        except Exception as e:
+            log.error(f"tmux send error: {e}")
+            self._status = "error"
+            return f"Something went wrong, sir: {str(e)[:100]}"
+
+    async def _send_subprocess(self, user_text: str) -> str:
+        """Fallback: subprocess pipe when tmux is unavailable."""
+        from sanitize import DANGEROUS_FLAG_LIST
+
         claude_path = shutil.which("claude")
         if not claude_path:
             return "Claude CLI not found on this system."
@@ -75,11 +152,8 @@ class WorkSession:
             *DANGEROUS_FLAG_LIST,
         ]
 
-        # Use --continue for subsequent messages to maintain context
         if self._message_count > 0:
             cmd.append("--continue")
-
-        self._status = "working"
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -118,13 +192,18 @@ class WorkSession:
             return f"Something went wrong, sir: {str(e)[:100]}"
 
     async def stop(self):
-        """End the work session."""
+        """End the work session. Kills the tmux session."""
         project = self._project_name
+        if self._tmux and self._tmux_name:
+            # Don't kill the tmux session — leave it for user to attach later
+            session_manager.update_status(self._tmux_name, "idle")
         self._active = False
         self._working_dir = None
         self._project_name = None
         self._message_count = 0
         self._status = "idle"
+        self._tmux = None
+        self._tmux_name = None
         log.info(f"Work mode ended for {project}")
 
     def _save_session(self):
@@ -137,6 +216,7 @@ class WorkSession:
                         "project_name": self._project_name,
                         "working_dir": self._working_dir,
                         "message_count": self._message_count,
+                        "tmux_name": self._tmux_name,
                     }
                 )
             )
@@ -157,9 +237,19 @@ class WorkSession:
                 data = json.loads(SESSION_FILE.read_text())
                 self._working_dir = data["working_dir"]
                 self._project_name = data["project_name"]
-                self._message_count = data.get("message_count", 1)  # Assume at least 1 so --continue is used
+                self._message_count = data.get("message_count", 1)
                 self._active = True
                 self._status = "idle"
+
+                # Try to reconnect to existing tmux session
+                tmux_name = data.get("tmux_name")
+                if tmux_name and TMUX_AVAILABLE:
+                    session = TmuxSession(tmux_name)
+                    if await session.is_alive():
+                        self._tmux = session
+                        self._tmux_name = tmux_name
+                        log.info(f"Restored tmux session: {tmux_name}")
+
                 log.info(f"Restored work session: {self._project_name} ({self._working_dir})")
                 return True
         except Exception as e:

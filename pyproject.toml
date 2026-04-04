@@ -40,7 +40,8 @@ ignore = [
 "mail_access.py" = ["S603", "S607", "S110"]
 "notes_access.py" = ["S603", "S607", "S110"]
 "screen.py" = ["S603", "S607", "S110", "SIM105"]
-"work_mode.py" = ["S603", "S607", "S110", "SIM105"]
+# S101: type-narrowing asserts in _send_tmux
+"work_mode.py" = ["S603", "S607", "S110", "SIM105", "S101"]
 "qa.py" = ["S603", "S607"]
 "browser.py" = ["S603", "S607", "S112", "S306"]
 # Background/evolution modules: resilient try-except-pass

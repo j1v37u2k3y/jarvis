@@ -14,6 +14,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from sanitize import DANGEROUS_FLAG, escape_applescript, escape_shell_in_applescript
+from tmux_sessions import TMUX_AVAILABLE
+from work_mode import session_manager
 
 log = logging.getLogger("jarvis.actions")
 
@@ -80,7 +82,19 @@ async def _revert_terminal_theme(profile_name: str):
 
 
 async def open_terminal(command: str = "") -> dict:
-    """Open Terminal.app and optionally run a command. Marks it blue for JARVIS."""
+    """Open Terminal.app with a tmux session for JARVIS monitoring.
+
+    Falls back to direct AppleScript if tmux is unavailable.
+    """
+    if TMUX_AVAILABLE and command:
+        # Create a tmux session, then open Terminal attached to it
+        tmux = await session_manager.create_session("terminal", str(Path.home()), command=command, mode="interactive")
+        if tmux:
+            await session_manager.attach_in_terminal(tmux.name)
+            await _mark_terminal_as_jarvis()
+            return {"success": True, "confirmation": "Terminal is open, sir."}
+
+    # Fallback: direct AppleScript
     if command:
         escaped = escape_applescript(command)
         script = f'tell application "Terminal"\n    activate\n    do script "{escaped}"\nend tell'
@@ -139,17 +153,30 @@ async def open_chrome(url: str) -> dict:
 
 
 async def open_claude_in_project(project_dir: str, prompt: str) -> dict:
-    """Open Terminal, cd to project dir, run Claude Code interactively.
+    """Open Claude Code in a project directory via tmux.
 
     Writes the prompt to CLAUDE.md (which claude reads automatically on startup)
-    then launches claude in interactive mode with --dangerously-skip-permissions.
-    No prompt escaping needed — CLAUDE.md handles context delivery.
+    then launches claude in a named tmux session. Opens Terminal attached to it
+    so the user can watch. JARVIS can also monitor via capture-pane.
     """
+    project_name = Path(project_dir).name
+
     # Write prompt to CLAUDE.md — claude reads this automatically
     claude_md = Path(project_dir) / "CLAUDE.md"
     claude_md.write_text(f"# Task\n\n{prompt}\n\nBuild this completely. If web app, make index.html work standalone.\n")
 
-    # Launch claude interactive — it reads CLAUDE.md on its own
+    if TMUX_AVAILABLE:
+        cmd = f"claude{DANGEROUS_FLAG}"
+        tmux = await session_manager.create_session(project_name, project_dir, command=cmd, mode="interactive")
+        if tmux:
+            await session_manager.attach_in_terminal(tmux.name)
+            await _mark_terminal_as_jarvis()
+            return {
+                "success": True,
+                "confirmation": "Claude Code is running in Terminal, sir. You can watch the progress.",
+            }
+
+    # Fallback: direct AppleScript
     script = (
         'tell application "Terminal"\n'
         "    activate\n"
@@ -178,15 +205,25 @@ async def open_claude_in_project(project_dir: str, prompt: str) -> dict:
 
 
 async def prompt_existing_terminal(project_name: str, prompt: str) -> dict:
-    """Find a Terminal window matching a project name and type a prompt into it.
+    """Send a prompt to an existing Claude Code session.
 
-    Uses System Events keystroke to type into an active Claude Code session
-    rather than `do script` which would open a new shell.
+    Uses tmux send-keys when available (reliable), falls back to
+    AppleScript keystroke simulation (fragile).
     """
+    # Try tmux first — much more reliable than keystroke simulation
+    if TMUX_AVAILABLE:
+        session = session_manager.find_session(project_name)
+        if session and await session.is_alive():
+            await session.send_keys(prompt)
+            # Also bring the Terminal to front so user can watch
+            await session_manager.attach_in_terminal(session.name)
+            await _mark_terminal_as_jarvis()
+            return {"success": True, "confirmation": f"Sent that to {project_name}, sir."}
+
+    # Fallback: AppleScript keystroke simulation
     escaped_name = escape_applescript(project_name)
     escaped_prompt = escape_applescript(prompt)
 
-    # Single atomic script: find window, focus it, type into it
     script = f'''
 tell application "Terminal"
     set matched to false
@@ -203,16 +240,13 @@ tell application "Terminal"
         return "NOT_FOUND"
     end if
 
-    -- Bring the matched window to front
     set index of targetWindow to 1
     set selected tab of targetWindow to selected tab of targetWindow
     activate
 end tell
 
--- Wait for window to be fully focused
 delay 1
 
--- Now type into it
 tell application "System Events"
     tell process "Terminal"
         set frontmost to true
