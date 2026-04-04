@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
+from sanitize import escape_applescript, escape_shell_in_applescript, DANGEROUS_FLAG
+
 log = logging.getLogger("jarvis.actions")
 
 DESKTOP_PATH = Path.home() / "Desktop"
@@ -63,7 +65,7 @@ async def _mark_terminal_as_jarvis(revert_after: float = 5.0):
 
 async def _revert_terminal_theme(profile_name: str):
     """Revert a Terminal window back to its original profile."""
-    escaped = profile_name.replace('"', '\\"')
+    escaped = escape_applescript(profile_name)
     script = (
         'tell application "Terminal"\n'
         f'    set current settings of front window to settings set "{escaped}"\n'
@@ -83,7 +85,7 @@ async def _revert_terminal_theme(profile_name: str):
 async def open_terminal(command: str = "") -> dict:
     """Open Terminal.app and optionally run a command. Marks it blue for JARVIS."""
     if command:
-        escaped = command.replace('"', '\\"')
+        escaped = escape_applescript(command)
         script = (
             'tell application "Terminal"\n'
             "    activate\n"
@@ -115,7 +117,7 @@ async def open_terminal(command: str = "") -> dict:
 
 async def open_browser(url: str, browser: str = "chrome") -> dict:
     """Open URL in user's browser (Chrome or Firefox)."""
-    escaped_url = url.replace('"', '\\"')
+    escaped_url = escape_applescript(url)
 
     if browser.lower() == "firefox":
         app_name = "Firefox"
@@ -169,7 +171,7 @@ async def open_claude_in_project(project_dir: str, prompt: str) -> dict:
     script = (
         'tell application "Terminal"\n'
         "    activate\n"
-        f'    do script "cd {project_dir} && claude --dangerously-skip-permissions"\n'
+        f'    do script "cd {escape_shell_in_applescript(project_dir)} && claude{DANGEROUS_FLAG}"\n'
         "end tell"
     )
     proc = await asyncio.create_subprocess_exec(
@@ -197,8 +199,8 @@ async def prompt_existing_terminal(project_name: str, prompt: str) -> dict:
     Uses System Events keystroke to type into an active Claude Code session
     rather than `do script` which would open a new shell.
     """
-    escaped_name = project_name.replace('"', '\\"')
-    escaped_prompt = prompt.replace("\\", "\\\\").replace('"', '\\"')
+    escaped_name = escape_applescript(project_name)
+    escaped_prompt = escape_applescript(prompt)
 
     # Single atomic script: find window, focus it, type into it
     script = f'''
@@ -345,7 +347,7 @@ async def execute_action(intent: dict, projects: list = None) -> dict:
     target = intent.get("target", "")
 
     if action == "open_terminal":
-        result = await open_terminal("claude --dangerously-skip-permissions")
+        result = await open_terminal(f"claude{DANGEROUS_FLAG}")
         result["project_dir"] = None
         return result
 

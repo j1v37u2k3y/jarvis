@@ -205,7 +205,12 @@ btnRestart.addEventListener("click", async (e) => {
   menuDropdown.style.display = "none";
   statusEl.textContent = "restarting...";
   try {
-    await fetch("/api/restart", { method: "POST" });
+    const tokenRes = await fetch("/auth/token");
+    const { token } = await tokenRes.json();
+    await fetch("/api/restart", {
+      method: "POST",
+      headers: token ? { "Authorization": `Bearer ${token}` } : {},
+    });
     // Wait a few seconds then reload
     setTimeout(() => window.location.reload(), 4000);
   } catch {

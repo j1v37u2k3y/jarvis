@@ -8,6 +8,8 @@ CANNOT edit or delete existing notes (safety).
 import asyncio
 import logging
 
+from sanitize import escape_applescript
+
 log = logging.getLogger("jarvis.notes")
 
 
@@ -67,7 +69,7 @@ end tell
 
 async def read_note(title_match: str) -> dict | None:
     """Read a note by title (partial match). Returns title + body."""
-    escaped = title_match.replace('"', '\\"')
+    escaped = escape_applescript(title_match)
     script = f'''
 tell application "Notes"
     set allNotes to every note
@@ -94,7 +96,7 @@ end tell
 
 async def search_notes_apple(query: str, count: int = 5) -> list[dict]:
     """Search notes by title keyword."""
-    escaped = query.replace('"', '\\"')
+    escaped = escape_applescript(query)
     script = f'''
 tell application "Notes"
     set output to ""
@@ -129,9 +131,9 @@ async def create_apple_note(title: str, body: str, folder: str = "Notes") -> boo
     # Convert markdown-style checklists to HTML
     html_body = _body_to_html(body)
 
-    escaped_title = title.replace('"', '\\"')
-    escaped_body = html_body.replace('"', '\\"')
-    escaped_folder = folder.replace('"', '\\"')
+    escaped_title = escape_applescript(title)
+    escaped_body = escape_applescript(html_body)
+    escaped_folder = escape_applescript(folder)
     script = f'''
 tell application "Notes"
     tell folder "{escaped_folder}"

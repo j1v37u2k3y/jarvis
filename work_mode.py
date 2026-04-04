@@ -13,6 +13,8 @@ import asyncio
 import json
 import logging
 import shutil
+
+from sanitize import DANGEROUS_FLAG_LIST
 from pathlib import Path
 
 log = logging.getLogger("jarvis.work_mode")
@@ -68,7 +70,7 @@ class WorkSession:
         cmd = [
             claude_path, "-p",
             "--output-format", "text",
-            "--dangerously-skip-permissions",
+            *DANGEROUS_FLAG_LIST,
         ]
 
         # Use --continue for subsequent messages to maintain context

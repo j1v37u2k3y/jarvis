@@ -17,11 +17,29 @@ export function createSocket(url: string): JarvisSocket {
   let reconnectDelay = 1000;
   let closed = false;
   let connected = false;
+  let authToken = "";
 
-  function connect() {
+  // Fetch auth token before connecting
+  async function fetchToken(): Promise<string> {
+    try {
+      const res = await fetch("/auth/token");
+      const data = await res.json();
+      return data.token || "";
+    } catch {
+      console.warn("[ws] failed to fetch auth token");
+      return "";
+    }
+  }
+
+  async function connect() {
     if (closed) return;
 
-    ws = new WebSocket(url);
+    if (!authToken) {
+      authToken = await fetchToken();
+    }
+
+    const wsUrl = authToken ? `${url}?token=${authToken}` : url;
+    ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
       connected = true;

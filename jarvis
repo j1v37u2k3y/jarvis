@@ -1,0 +1,21 @@
+#!/bin/bash
+# Launch JARVIS — backend + frontend in one command
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Start backend
+source "$DIR/venv/bin/activate"
+python "$DIR/server.py" &
+BACKEND_PID=$!
+
+# Start frontend
+cd "$DIR/frontend" && npx vite &
+FRONTEND_PID=$!
+
+# Cleanup on exit
+trap "kill $BACKEND_PID $FRONTEND_PID 2>/dev/null" EXIT INT TERM
+
+echo ""
+echo "  JARVIS is running. Press Ctrl+C to stop."
+echo ""
+
+wait

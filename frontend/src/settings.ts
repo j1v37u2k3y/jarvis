@@ -45,15 +45,36 @@ let setupStep = 0; // 0=anthropic, 1=fish, 2=name, 3=done
 // API helpers
 // ---------------------------------------------------------------------------
 
+let _authToken = "";
+
+async function ensureAuthToken(): Promise<string> {
+  if (!_authToken) {
+    try {
+      const res = await fetch("/auth/token");
+      const data = await res.json();
+      _authToken = data.token || "";
+    } catch {
+      console.warn("[settings] failed to fetch auth token");
+    }
+  }
+  return _authToken;
+}
+
 async function apiGet<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const token = await ensureAuthToken();
+  const res = await fetch(url, {
+    headers: token ? { "Authorization": `Bearer ${token}` } : {},
+  });
   return res.json();
 }
 
 async function apiPost<T>(url: string, body: unknown): Promise<T> {
+  const token = await ensureAuthToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
   return res.json();

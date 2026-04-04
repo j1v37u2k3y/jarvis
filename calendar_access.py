@@ -8,6 +8,8 @@ filter dates in Python. Results cached and refreshed in background.
 import asyncio
 import logging
 import os
+
+from sanitize import escape_applescript
 import time as _time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -65,7 +67,7 @@ async def _ensure_calendar_running():
 
 async def _fetch_calendar_events(cal_name: str, timeout: float = 12.0) -> list[dict]:
     """Fetch all events from one calendar, filter to today in Python."""
-    script = _BULK_SCRIPT.replace("{cal_name}", cal_name)
+    script = _BULK_SCRIPT.replace("{cal_name}", escape_applescript(cal_name))
     try:
         proc = await asyncio.create_subprocess_exec(
             "osascript", "-e", script,

@@ -11,6 +11,8 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Optional
 
+from sanitize import DANGEROUS_FLAG_LIST
+
 log = logging.getLogger("jarvis.qa")
 
 MAX_RETRIES = 3
@@ -48,7 +50,7 @@ class QAAgent:
             process = await asyncio.create_subprocess_exec(
                 "claude", "-p",
                 "--output-format", "text",
-                "--dangerously-skip-permissions",
+                *DANGEROUS_FLAG_LIST,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -136,7 +138,7 @@ class QAAgent:
             process = await asyncio.create_subprocess_exec(
                 "claude", "-p",
                 "--output-format", "text",
-                "--dangerously-skip-permissions",
+                *DANGEROUS_FLAG_LIST,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

@@ -96,6 +96,11 @@ USER_NAME=Tony
 # Optional -- specific calendar accounts (comma-separated)
 # Leave empty to auto-discover all calendars
 CALENDAR_ACCOUNTS=you@gmail.com,work@company.com
+
+# Optional -- allow Claude Code to run with --dangerously-skip-permissions
+# Enables full filesystem and command execution access for Claude Code sessions.
+# Only enable if you trust the prompts being sent to Claude Code.
+ALLOW_DANGEROUS_PERMISSIONS=true
 ```
 
 ## Architecture
