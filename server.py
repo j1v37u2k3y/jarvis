@@ -58,13 +58,11 @@ from mail_access import (
     get_unread_count,
     get_unread_messages,
 )
+from mc_client import mc_client
 from memory import (
     build_memory_context,
-    complete_task,
     create_note,
-    create_task,
     extract_memories,
-    format_tasks_for_voice,
     get_important_memories,
     get_open_tasks,
     remember,
@@ -234,6 +232,9 @@ CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're
 - [ACTION:CREATE_NOTE] title ||| body — create a new Apple Note. For saving plans, ideas, lists.
   "save that as a note" → [ACTION:CREATE_NOTE] Day Plan March 19 ||| Morning: client calls. Afternoon: TikTok dashboard. Evening: JARVIS improvements.
 - [ACTION:READ_NOTE] title search — read an existing Apple Note by title keyword.
+- [ACTION:SET_TIMER] duration ||| message — set a timer. JARVIS will interrupt with a voice alert when it fires.
+  "set a timer for 5 minutes" → [ACTION:SET_TIMER] 5 minutes ||| Your timer is up, sir.
+  "remind me in 30 minutes to check on the build" → [ACTION:SET_TIMER] 30 minutes ||| Time to check on the build, sir.
 
 You use Claude Code as your tool to build, research, and write code — but YOU are the one doing the work. Never say "Claude Code did X" or "Claude Code is asking" — say "I built X", "I'm checking on that", "I found X". You ARE the intelligence. Claude Code is just your hands.
 
@@ -275,6 +276,9 @@ If the DISPATCHES section shows a recent completed result for a project, DO NOT 
 
 KNOWN PROJECTS:
 {known_projects}
+
+MCP SERVERS:
+The rick_mcp security toolkit is available in spawned Claude Code sessions. For any security, pentesting, recon, threat modeling, or offensive/defensive security requests — delegate to a Claude Code session. It will discover the rick_mcp tools automatically.
 """
 
 
@@ -668,6 +672,61 @@ def format_projects_for_prompt(projects: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_mc_tasks_for_voice(tasks: list[dict]) -> str:
+    """Format Mission Control tasks for voice response."""
+    if not tasks:
+        return "No open tasks, sir."
+    count = len(tasks)
+    active = [t for t in tasks if t.get("kanban") == "in-progress"]
+    pending = [t for t in tasks if t.get("kanban") == "not-started"]
+
+    parts = []
+    if active:
+        parts.append(f"{len(active)} in progress")
+    if pending:
+        parts.append(f"{len(pending)} pending")
+    result = f"You have {count} tasks: {', '.join(parts)}."
+
+    for t in tasks[:3]:
+        status = "working on" if t.get("kanban") == "in-progress" else ""
+        agent = t.get("assignedTo", "")
+        title = t.get("title", "untitled")
+        if status:
+            result += f" {agent} is {status} {title}."
+        else:
+            result += f" {title}, assigned to {agent}."
+    if count > 3:
+        result += f" And {count - 3} more."
+    return result
+
+
+def _format_mc_inbox_for_voice(messages: list[dict]) -> str:
+    """Format Mission Control inbox messages for voice response."""
+    if not messages:
+        return "Inbox is empty, sir."
+    count = len(messages)
+    if count == 1:
+        m = messages[0]
+        return f"One message from {m.get('from', 'unknown')}: {m.get('subject', '')}."
+    result = f"You have {count} unread messages."
+    for m in messages[:3]:
+        result += f" {m.get('from', 'unknown')}: {m.get('subject', '')}."
+    if count > 3:
+        result += f" And {count - 3} more."
+    return result
+
+
+def _format_mc_decisions_for_voice(decisions: list[dict]) -> str:
+    """Format Mission Control pending decisions for voice response."""
+    if not decisions:
+        return "No decisions pending, sir."
+    count = len(decisions)
+    if count == 1:
+        d = decisions[0]
+        return f"One decision pending from {d.get('requestedBy', 'an agent')}: {d.get('question', '')}"
+    return f"{count} decisions pending, sir."
+
+
 # ---------------------------------------------------------------------------
 # Speech-to-Text Corrections
 # ---------------------------------------------------------------------------
@@ -813,7 +872,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r"\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$",
+        r"\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|SET_TIMER)\]\s*(.*?)$",
         response,
         _action_re.DOTALL,
     )
@@ -1482,6 +1541,40 @@ return windowList
 _AUTH_TOKEN: str = ""
 
 
+async def _mc_inbox_watcher():
+    """Poll Mission Control inbox for new agent reports and notify the user."""
+    seen_ids: set[str] = set()
+    while True:
+        try:
+            await asyncio.sleep(15)
+            messages = await mc_client.list_inbox(agent="me", status="unread", limit=20)
+            for msg in messages:
+                msg_id = msg.get("id")
+                if not msg_id or msg_id in seen_ids:
+                    continue
+                seen_ids.add(msg_id)
+                msg_type = msg.get("type", "update")
+                sender = msg.get("from", "system")
+                subject = msg.get("subject", "(no subject)")
+                if msg_type == "report":
+                    log.info(f"[MC inbox] {sender} finished: {subject}")
+                    notification = f"Sir, {sender} finished: {subject}"
+                    await task_manager._notify(
+                        {"type": "mc_inbox", "from": sender, "subject": subject, "body": notification}
+                    )
+                elif msg_type == "question":
+                    log.info(f"[MC inbox] {sender} is asking: {subject}")
+                    await task_manager._notify(
+                        {"type": "mc_inbox", "from": sender, "subject": subject, "body": msg.get("body", "")[:200]}
+                    )
+                # Mark as read so we don't re-notify
+                await mc_client.mark_inbox_read(msg_id)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.debug(f"Inbox watcher error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global anthropic_client, cached_projects, _AUTH_TOKEN
@@ -1495,9 +1588,29 @@ async def lifespan(application: FastAPI):
 
     # Start context refresh in a separate thread (never touches event loop)
     _refresh_context_sync()
+
+    # Start MC daemon if MC is reachable
+    if await mc_client.is_healthy():
+        status = await mc_client.get_daemon_status()
+        if status and not status.get("isRunning"):
+            result = await mc_client.start_daemon()
+            if result:
+                log.info("Mission Control daemon started")
+            else:
+                log.warning("Failed to start MC daemon")
+        else:
+            log.info("Mission Control daemon already running")
+    else:
+        log.info("Mission Control not reachable — tasks will use fallback dispatch")
+
+    # Start MC inbox watcher (notifies user when MC agents finish tasks)
+    inbox_task = asyncio.create_task(_mc_inbox_watcher())
+
     log.info("JARVIS server starting")
 
     yield
+
+    inbox_task.cancel()
 
 
 app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
@@ -1791,6 +1904,33 @@ def detect_action_fast(text: str) -> dict | None:
         ]
     ):
         return {"action": "check_sessions"}
+
+    # Inbox check (Mission Control)
+    if any(
+        p in t
+        for p in [
+            "what's in my inbox",
+            "whats in my inbox",
+            "check inbox",
+            "any reports",
+            "agent reports",
+            "inbox messages",
+        ]
+    ):
+        return {"action": "check_inbox"}
+
+    # Decisions check (Mission Control)
+    if any(
+        p in t
+        for p in [
+            "any decisions",
+            "decisions to make",
+            "pending decisions",
+            "what needs my approval",
+            "approval queue",
+        ]
+    ):
+        return {"action": "check_decisions"}
 
     # Task list check
     if any(
@@ -2544,8 +2684,17 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "check_sessions":
                             response_text = session_manager.format_for_voice()
                         elif action["action"] == "check_tasks":
-                            tasks = get_open_tasks()
-                            response_text = format_tasks_for_voice(tasks)
+                            # Get both not-started and in-progress from MC
+                            pending = await mc_client.list_tasks(kanban="not-started", limit=20)
+                            active = await mc_client.list_tasks(kanban="in-progress", limit=20)
+                            mc_tasks = active + pending
+                            response_text = _format_mc_tasks_for_voice(mc_tasks)
+                        elif action["action"] == "check_inbox":
+                            messages = await mc_client.list_inbox(agent="me", status="unread", limit=10)
+                            response_text = _format_mc_inbox_for_voice(messages)
+                        elif action["action"] == "check_decisions":
+                            decisions = await mc_client.list_decisions(status="pending")
+                            response_text = _format_mc_decisions_for_voice(decisions)
                         elif action["action"] == "check_usage":
                             response_text = get_usage_summary()
                         else:
@@ -2596,52 +2745,60 @@ async def voice_handler(ws: WebSocket):
                                         response_text = "Right away, sir."
 
                                 if embedded_action["action"] == "build":
-                                    # Build in background — JARVIS stays conversational
+                                    # Dispatch build to Mission Control — daemon handles execution
                                     target = embedded_action["target"]
-                                    name = _generate_project_name(target)
-                                    path = str(Path.home() / "Desktop" / name)
-                                    os.makedirs(path, exist_ok=True)
-
-                                    # Write detailed CLAUDE.md
-                                    Path(path, "CLAUDE.md").write_text(
-                                        f"# Task\n\n{target}\n\n"
-                                        "## Instructions\n"
-                                        "- BUILD THIS NOW. Do not ask clarifying questions.\n"
-                                        "- Use your best judgment for any design/architecture decisions.\n"
-                                        "- Write complete, working code files — not plans or specs.\n"
-                                        "- If it's a web app: use React + Vite + Tailwind unless specified otherwise.\n"
-                                        "- Make it look polished and professional. Modern UI, clean layout.\n"
-                                        "- Ensure it runs with a single command (npm run dev or similar).\n"
-                                        "- If you reference a real product's UI (e.g. 'Zillow clone'), match their actual layout and features closely.\n"
-                                        "- Use realistic mock data, not placeholder Lorem Ipsum.\n"
-                                        "- After building, start the dev server and verify the app loads without errors.\n"
-                                        "- IMPORTANT: Your LAST line of output MUST be exactly: RUNNING_AT=http://localhost:PORT (the actual port the dev server is using)\n"
+                                    mc_task = await mc_client.create_task(
+                                        title=_generate_project_name(target),
+                                        description=target,
+                                        importance="important",
+                                        urgency="urgent",
+                                        assigned_to="developer",
                                     )
-
-                                    # Register and dispatch
-                                    did = dispatch_registry.register(name, path, target)
-                                    asyncio.create_task(
-                                        _execute_prompt_project(
-                                            name,
-                                            target,
-                                            work_session,
-                                            ws,
-                                            dispatch_id=did,
-                                            history=history,
-                                            voice_state=voice_state,
+                                    if mc_task:
+                                        log.info(f"MC build task created: {mc_task['id']} — {mc_task['title']}")
+                                    else:
+                                        # Fallback: old direct dispatch if MC is offline
+                                        log.warning("MC offline — falling back to direct dispatch")
+                                        name = _generate_project_name(target)
+                                        path = str(Path.home() / "Desktop" / name)
+                                        os.makedirs(path, exist_ok=True)
+                                        Path(path, "CLAUDE.md").write_text(
+                                            f"# Task\n\n{target}\n\nBuild this completely.\n"
                                         )
-                                    )
+                                        did = dispatch_registry.register(name, path, target)
+                                        asyncio.create_task(
+                                            _execute_prompt_project(
+                                                name,
+                                                target,
+                                                work_session,
+                                                ws,
+                                                dispatch_id=did,
+                                                history=history,
+                                                voice_state=voice_state,
+                                            )
+                                        )
                                 elif embedded_action["action"] == "browse":
                                     asyncio.create_task(_execute_browse(embedded_action["target"]))
                                 elif embedded_action["action"] == "research":
-                                    # Research enters work mode too
-                                    name = _generate_project_name(embedded_action["target"])
-                                    path = str(Path.home() / "Desktop" / name)
-                                    os.makedirs(path, exist_ok=True)
-                                    await work_session.start(path)
-                                    asyncio.create_task(
-                                        self_work_and_notify(work_session, embedded_action["target"], ws)
+                                    # Dispatch research to Mission Control
+                                    target = embedded_action["target"]
+                                    mc_task = await mc_client.create_task(
+                                        title=f"Research: {target[:80]}",
+                                        description=target,
+                                        importance="important",
+                                        urgency="not-urgent",
+                                        assigned_to="researcher",
                                     )
+                                    if mc_task:
+                                        log.info(f"MC research task created: {mc_task['id']}")
+                                    else:
+                                        # Fallback: old direct dispatch if MC is offline
+                                        log.warning("MC offline — falling back to direct research")
+                                        name = _generate_project_name(target)
+                                        path = str(Path.home() / "Desktop" / name)
+                                        os.makedirs(path, exist_ok=True)
+                                        await work_session.start(path)
+                                        asyncio.create_task(self_work_and_notify(work_session, target, ws))
                                 elif embedded_action["action"] == "open_terminal":
                                     asyncio.create_task(_execute_open_terminal())
                                 elif embedded_action["action"] == "prompt_project":
@@ -2670,9 +2827,17 @@ async def voice_handler(ws: WebSocket):
                                         priority = parts[0].strip() or "medium"
                                         title = parts[1].strip()
                                         desc = parts[2].strip() if len(parts) > 2 else ""
-                                        due = parts[3].strip() if len(parts) > 3 else ""
-                                        create_task(title=title, description=desc, priority=priority, due_date=due)
-                                        log.info(f"Task created: {title}")
+                                        # Map JARVIS priority → Eisenhower matrix
+                                        importance = "important" if priority in ("high", "medium") else "not-important"
+                                        urgency = "urgent" if priority == "high" else "not-urgent"
+                                        await mc_client.create_task(
+                                            title=title,
+                                            description=desc,
+                                            importance=importance,
+                                            urgency=urgency,
+                                            assigned_to="me",
+                                        )
+                                        log.info(f"MC task created: {title}")
                                 elif embedded_action["action"] == "add_note":
                                     target = embedded_action["target"]
                                     if "|||" in target:
@@ -2682,12 +2847,10 @@ async def voice_handler(ws: WebSocket):
                                         create_note(content=target)
                                     log.info("Note created")
                                 elif embedded_action["action"] == "complete_task":
-                                    try:
-                                        task_id = int(embedded_action["target"].strip())
-                                        complete_task(task_id)
-                                        log.info(f"Task {task_id} completed")
-                                    except ValueError:
-                                        pass
+                                    task_id = embedded_action["target"].strip()
+                                    if task_id:
+                                        await mc_client.complete_task(task_id)
+                                        log.info(f"MC task {task_id} completed")
                                 elif embedded_action["action"] == "remember":
                                     remember(embedded_action["target"].strip(), mem_type="fact", importance=7)
                                     log.info(f"Memory stored: {embedded_action['target'][:60]}")
@@ -2728,6 +2891,52 @@ async def voice_handler(ws: WebSocket):
                                                 pass
 
                                     asyncio.create_task(_read_and_report(embedded_action["target"].strip(), ws))
+                                elif embedded_action["action"] == "set_timer":
+                                    # Parse: "5 minutes ||| check on the build" or just "5 minutes"
+                                    target = embedded_action["target"]
+                                    parts = target.split("|||")
+                                    time_str = parts[0].strip()
+                                    reminder_msg = parts[1].strip() if len(parts) > 1 else "Your timer is up, sir."
+
+                                    # Parse seconds from time string
+                                    import re as _timer_re
+
+                                    seconds = 0
+                                    hrs = _timer_re.search(r"(\d+)\s*h", time_str)
+                                    mins = _timer_re.search(r"(\d+)\s*m", time_str)
+                                    secs = _timer_re.search(r"(\d+)\s*s", time_str)
+                                    if hrs:
+                                        seconds += int(hrs.group(1)) * 3600
+                                    if mins:
+                                        seconds += int(mins.group(1)) * 60
+                                    if secs:
+                                        seconds += int(secs.group(1))
+                                    if not seconds:
+                                        # Try bare number as minutes
+                                        bare = _timer_re.search(r"(\d+)", time_str)
+                                        if bare:
+                                            seconds = int(bare.group(1)) * 60
+
+                                    if seconds > 0:
+
+                                        async def _timer_fire(_seconds, _msg, _ws):
+                                            await asyncio.sleep(_seconds)
+                                            audio = await synthesize_speech(strip_markdown_for_tts(_msg))
+                                            if audio and _ws:
+                                                try:
+                                                    await _ws.send_json({"type": "status", "state": "speaking"})
+                                                    await _ws.send_json(
+                                                        {
+                                                            "type": "audio",
+                                                            "data": base64.b64encode(audio).decode(),
+                                                            "text": _msg,
+                                                        }
+                                                    )
+                                                except Exception:
+                                                    pass
+
+                                        asyncio.create_task(_timer_fire(seconds, reminder_msg, ws))
+                                        log.info(f"Timer set: {seconds}s — {reminder_msg}")
 
                 # Update history
                 history.append({"role": "user", "content": user_text})

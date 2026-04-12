@@ -1,12 +1,13 @@
 #!/bin/bash
 # Run the full CI pipeline locally — same checks as GitHub Actions.
-# Usage: ./ci [check]     — lint, typecheck, test, security (default)
-#        ./ci fix         — auto-fix lint issues
-#        ./ci lint        — lint only
-#        ./ci test        — tests only
-#        ./ci typecheck   — mypy only
-#        ./ci security    — bandit only
-#        ./ci frontend    — frontend typecheck only
+# Usage: ./ci [check]      — lint, typecheck, test, security (default)
+#        ./ci fix          — auto-fix lint issues
+#        ./ci lint         — lint only
+#        ./ci test         — tests only (skips integration)
+#        ./ci integration  — integration tests (requires live Mission Control)
+#        ./ci typecheck    — mypy only
+#        ./ci security     — bandit only
+#        ./ci frontend     — frontend typecheck only
 
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -58,10 +59,22 @@ run_typecheck() {
 
 run_test() {
     info "Tests (pytest)"
-    if python -m pytest tests/ -v --ignore=tests/test_classifier.py --ignore=tests/test_browser_integration.py 2>&1; then
+    if python -m pytest tests/ -v \
+        --ignore=tests/test_classifier.py \
+        --ignore=tests/test_browser_integration.py \
+        -m "not requires_mc and not requires_api and not requires_network" 2>&1; then
         pass "pytest"
     else
         fail "pytest"
+    fi
+}
+
+run_integration() {
+    info "Integration Tests (live Mission Control)"
+    if python -m pytest tests/test_mc_integration.py -v -m requires_mc 2>&1; then
+        pass "mc integration"
+    else
+        fail "mc integration"
     fi
 }
 
@@ -115,6 +128,9 @@ case "$CMD" in
     test)
         run_test
         ;;
+    integration)
+        run_integration
+        ;;
     typecheck)
         run_typecheck
         ;;
@@ -125,7 +141,7 @@ case "$CMD" in
         run_frontend
         ;;
     *)
-        echo "Usage: ./ci [check|fix|lint|test|typecheck|security|frontend]"
+        echo "Usage: ./ci [check|fix|lint|test|integration|typecheck|security|frontend]"
         exit 1
         ;;
 esac

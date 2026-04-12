@@ -110,4 +110,5 @@ asyncio_mode = "auto"
 markers = [
     "requires_api: test requires ANTHROPIC_API_KEY",
     "requires_network: test requires network access",
+    "requires_mc: test requires Mission Control running at localhost:3000",
 ]

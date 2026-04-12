@@ -1,21 +1,66 @@
 #!/bin/bash
-# Launch JARVIS — backend + frontend in one command
+# Launch JARVIS + Mission Control — backend + frontend + MC + daemon in one command
 DIR="$(cd "$(dirname "$0")" && pwd)"
+MC_DIR="$HOME/IdeaProjects/mission-control/mission-control"
 
-# Start backend
+# Load JARVIS .env so ANTHROPIC_API_KEY is available to MC daemon
+if [ -f "$DIR/.env" ]; then
+    set -a
+    source "$DIR/.env"
+    set +a
+fi
+
+# Kill any stale MC daemon from previous runs
+pkill -f "scripts/daemon/index.ts" 2>/dev/null
+
+# Start Mission Control (Next.js)
+if [ -d "$MC_DIR" ]; then
+    echo "  Starting Mission Control..."
+    (cd "$MC_DIR" && ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" pnpm dev > /tmp/mc-jarvis.log 2>&1) &
+    MC_PID=$!
+
+    # Wait for MC to be reachable (up to 30s)
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        if curl -s http://localhost:3000/api/server-status > /dev/null 2>&1; then
+            echo "  Mission Control ready at http://localhost:3000"
+            break
+        fi
+        sleep 2
+    done
+
+    # Start MC daemon with ANTHROPIC_API_KEY so Claude Code can authenticate
+    echo "  Starting MC daemon..."
+    (cd "$MC_DIR" && ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" node --import tsx scripts/daemon/index.ts start > /tmp/mc-daemon.log 2>&1) &
+    DAEMON_PID=$!
+    echo "  MC daemon started (PID $DAEMON_PID)"
+else
+    echo "  Mission Control not found at $MC_DIR — running without MC integration"
+    MC_PID=""
+    DAEMON_PID=""
+fi
+
+# Start JARVIS backend
 source "$DIR/venv/bin/activate"
 python "$DIR/server.py" &
 BACKEND_PID=$!
 
-# Start frontend
+# Start JARVIS frontend
 cd "$DIR/frontend" && npx vite &
 FRONTEND_PID=$!
 
-# Cleanup on exit
-trap "kill $BACKEND_PID $FRONTEND_PID 2>/dev/null" EXIT INT TERM
+# Cleanup on exit — kill everything
+cleanup() {
+    kill $BACKEND_PID $FRONTEND_PID $MC_PID $DAEMON_PID 2>/dev/null
+    pkill -f "scripts/daemon/index.ts" 2>/dev/null
+    pkill -f "mission-control.*next" 2>/dev/null
+}
+trap cleanup EXIT INT TERM
 
 echo ""
 echo "  JARVIS is running. Press Ctrl+C to stop."
+echo "  - JARVIS:          http://localhost:5173"
+echo "  - Mission Control: http://localhost:3000"
+echo "  - Daemon log:      /tmp/mc-daemon.log"
 echo ""
 
 wait

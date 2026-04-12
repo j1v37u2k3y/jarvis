@@ -22,7 +22,7 @@ html, body {
 
 #status-text {
   position: fixed;
-  bottom: 40px;
+  bottom: 80px;
   left: 50%;
   transform: translateX(-50%);
   color: rgba(14, 165, 233, 0.5);
@@ -37,7 +37,7 @@ html, body {
 
 #jarvis-label {
   position: fixed;
-  bottom: 16px;
+  bottom: 56px;
   left: 50%;
   transform: translateX(-50%);
   color: rgba(14, 165, 233, 0.2);
@@ -416,4 +416,56 @@ html, body {
   padding: 16px 24px;
   display: flex;
   justify-content: flex-end;
+}
+
+/* Text input bar */
+#text-input-bar {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  z-index: 10;
+  width: min(500px, 90vw);
+}
+
+#text-input {
+  flex: 1;
+  background: rgba(14, 165, 233, 0.06);
+  border: 1px solid rgba(14, 165, 233, 0.15);
+  border-radius: 8px;
+  padding: 8px 14px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+#text-input::placeholder {
+  color: rgba(14, 165, 233, 0.25);
+}
+
+#text-input:focus {
+  border-color: rgba(14, 165, 233, 0.4);
+  background: rgba(14, 165, 233, 0.1);
+}
+
+#text-send {
+  background: rgba(14, 165, 233, 0.1);
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  border-radius: 8px;
+  color: rgba(14, 165, 233, 0.6);
+  cursor: pointer;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  transition: all 0.2s;
+}
+
+#text-send:hover {
+  background: rgba(14, 165, 233, 0.2);
+  color: rgba(14, 165, 233, 0.9);
+  border-color: rgba(14, 165, 233, 0.4);
 }

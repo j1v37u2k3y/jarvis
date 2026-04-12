@@ -177,6 +177,23 @@ const btnMenu = document.getElementById("btn-menu")!;
 const menuDropdown = document.getElementById("menu-dropdown")!;
 const btnRestart = document.getElementById("btn-restart")!;
 const btnFixSelf = document.getElementById("btn-fix-self")!;
+const textInput = document.getElementById("text-input") as HTMLInputElement;
+const textSend = document.getElementById("text-send")!;
+
+// Text input — sends through same path as voice
+function sendTextMessage() {
+  const text = textInput.value.trim();
+  if (!text) return;
+  audioPlayer.stop();
+  socket.send({ type: "transcript", text, isFinal: true });
+  transition("thinking");
+  textInput.value = "";
+}
+
+textSend.addEventListener("click", sendTextMessage);
+textInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendTextMessage();
+});
 
 btnMute.addEventListener("click", (e) => {
   e.stopPropagation();

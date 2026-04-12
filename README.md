@@ -2,9 +2,11 @@
 
 **Just A Rather Very Intelligent System.**
 
-A voice-first AI assistant that runs on your Mac. Talk to it, and it talks back -- with a British accent, dry wit, and an audio-reactive particle orb straight out of the MCU.
+A voice-first AI assistant that runs on your Mac. Talk to it, and it talks back -- with a British accent, dry wit, and
+an audio-reactive particle orb straight out of the MCU.
 
-JARVIS connects to your Apple Calendar, Mail, and Notes. It can browse the web, spawn Claude Code sessions to build entire projects, and plan your day -- all through natural voice conversation.
+JARVIS connects to your Apple Calendar, Mail, and Notes. It can browse the web, spawn Claude Code sessions to build
+entire projects, and plan your day -- all through natural voice conversation.
 
 > "Will do, sir."
 
@@ -47,7 +49,8 @@ cd jarvis
 claude
 ```
 
-Claude Code will read the project's `CLAUDE.md` and walk you through setup step by step -- API keys, dependencies, SSL certs, everything.
+Claude Code will read the project's `CLAUDE.md` and walk you through setup step by step -- API keys, dependencies, SSL
+certs, everything.
 
 ## Manual Setup
 
@@ -69,16 +72,30 @@ cd frontend && npm install && cd ..
 # 5. Generate SSL certificates (needed for secure WebSocket)
 openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj '/CN=localhost'
 
-# 6. Start JARVIS (backend + frontend in one command)
+# 6. (Optional but recommended) Install Mission Control for task delegation
+git clone https://github.com/MeisnerDan/mission-control.git ~/IdeaProjects/mission-control
+cd ~/IdeaProjects/mission-control/mission-control && pnpm install && cd -
+
+# 7. Start JARVIS (starts MC, backend, and frontend in one command)
 ./jarvis
 
-# 7. Open Chrome
+# 8. Open Chrome
 open http://localhost:5173
 ```
 
 Click the page once to enable audio, then speak. JARVIS will respond.
 
-> **Note:** `./jarvis` starts both the backend and frontend together. Press `Ctrl+C` to stop both. You can also run them separately with `python server.py` and `cd frontend && npm run dev` in two terminals.
+> **Note:** `./jarvis` starts Mission Control (if installed), the JARVIS backend, and the frontend together. Press
+`Ctrl+C` to stop all of them. JARVIS works without Mission Control, but task delegation features will be unavailable.
+
+### Mission Control Integration
+
+JARVIS uses [Mission Control](https://github.com/MeisnerDan/mission-control) as its task management backbone. When you
+say "add task X" or "build me Y", JARVIS creates a task in Mission Control, which then dispatches Claude Code via its
+daemon to execute it. Agent reports come back through MC's inbox, and JARVIS speaks them to you.
+
+- Mission Control UI: http://localhost:3000
+- JARVIS UI: http://localhost:5173
 
 ## Configuration
 
@@ -116,15 +133,15 @@ Microphone -> Web Speech API -> WebSocket -> FastAPI -> Claude (Haiku) -> Fish A
                                         (Calendar, Mail, Notes, Terminal)
 ```
 
-| Layer | Technology |
-|-------|-----------|
-| Backend | FastAPI + Python (`server.py`, ~2300 lines) |
-| Frontend | Vite + TypeScript + Three.js |
-| Communication | WebSocket (JSON messages + binary audio) |
-| AI (fast) | Claude Haiku -- low-latency voice responses |
-| AI (deep) | Claude Opus -- research and complex tasks |
-| TTS | Fish Audio with JARVIS voice model |
-| System | AppleScript for all macOS integrations |
+| Layer         | Technology                                  |
+|---------------|---------------------------------------------|
+| Backend       | FastAPI + Python (`server.py`, ~2300 lines) |
+| Frontend      | Vite + TypeScript + Three.js                |
+| Communication | WebSocket (JSON messages + binary audio)    |
+| AI (fast)     | Claude Haiku -- low-latency voice responses |
+| AI (deep)     | Claude Opus -- research and complex tasks   |
+| TTS           | Fish Audio with JARVIS voice model          |
+| System        | AppleScript for all macOS integrations      |
 
 ## How the Voice Loop Works
 
@@ -141,25 +158,27 @@ Microphone -> Web Speech API -> WebSocket -> FastAPI -> Claude (Haiku) -> Fish A
 
 ## Key Files
 
-| File | Purpose |
-|------|---------|
-| `server.py` | Main server -- WebSocket handler, LLM, action system |
-| `frontend/src/orb.ts` | Three.js particle orb visualization |
-| `frontend/src/voice.ts` | Web Speech API + audio playback |
-| `frontend/src/main.ts` | Frontend state machine |
-| `memory.py` | SQLite memory system with FTS5 full-text search |
-| `calendar_access.py` | Apple Calendar integration via AppleScript |
-| `mail_access.py` | Apple Mail integration (read-only) |
-| `notes_access.py` | Apple Notes integration |
-| `actions.py` | System actions (Terminal, Chrome, Claude Code) |
-| `browser.py` | Playwright web automation |
-| `work_mode.py` | Persistent Claude Code sessions |
-| `planner.py` | Multi-step task planning with smart questions |
+| File                    | Purpose                                              |
+|-------------------------|------------------------------------------------------|
+| `server.py`             | Main server -- WebSocket handler, LLM, action system |
+| `frontend/src/orb.ts`   | Three.js particle orb visualization                  |
+| `frontend/src/voice.ts` | Web Speech API + audio playback                      |
+| `frontend/src/main.ts`  | Frontend state machine                               |
+| `memory.py`             | SQLite memory system with FTS5 full-text search      |
+| `calendar_access.py`    | Apple Calendar integration via AppleScript           |
+| `mail_access.py`        | Apple Mail integration (read-only)                   |
+| `notes_access.py`       | Apple Notes integration                              |
+| `actions.py`            | System actions (Terminal, Chrome, Claude Code)       |
+| `browser.py`            | Playwright web automation                            |
+| `work_mode.py`          | Persistent Claude Code sessions                      |
+| `planner.py`            | Multi-step task planning with smart questions        |
 
 ## Features in Detail
 
 ### Action System
+
 JARVIS uses action tags to trigger real system actions:
+
 - `[ACTION:BUILD]` -- spawns Claude Code to build a project
 - `[ACTION:BROWSE]` -- opens Chrome to a URL or search query
 - `[ACTION:RESEARCH]` -- deep research with Claude Opus, outputs an HTML report
@@ -168,10 +187,14 @@ JARVIS uses action tags to trigger real system actions:
 - `[ACTION:REMEMBER]` -- stores a fact for future context
 
 ### Memory System
-JARVIS remembers things you tell it using SQLite with FTS5 full-text search. Preferences, decisions, and facts persist across sessions.
+
+JARVIS remembers things you tell it using SQLite with FTS5 full-text search. Preferences, decisions, and facts persist
+across sessions.
 
 ### Calendar & Mail
-All macOS integrations use AppleScript -- no OAuth flows, no token management. Just native system access. Mail is intentionally read-only for safety.
+
+All macOS integrations use AppleScript -- no OAuth flows, no token management. Just native system access. Mail is
+intentionally read-only for safety.
 
 ## Contributing
 
@@ -187,7 +210,8 @@ Please open an issue before submitting large PRs so we can discuss the approach.
 
 ## License
 
-Free for personal, non-commercial use. Commercial use requires a license — visit [ethanplus.ai](https://ethanplus.ai) for inquiries. See [LICENSE](LICENSE) for details.
+Free for personal, non-commercial use. Commercial use requires a license — visit [ethanplus.ai](https://ethanplus.ai)
+for inquiries. See [LICENSE](LICENSE) for details.
 
 ## Credits
 
@@ -197,4 +221,6 @@ Powered by [Anthropic Claude](https://anthropic.com) and [Fish Audio](https://fi
 
 Inspired by the AI that started it all -- Tony Stark's JARVIS.
 
-> **Disclaimer:** This is an independent fan project and is not affiliated with, endorsed by, or connected to Marvel Entertainment, The Walt Disney Company, or any related entities. The JARVIS name and character are property of Marvel Entertainment.
+> **Disclaimer:** This is an independent fan project and is not affiliated with, endorsed by, or connected to Marvel
+> Entertainment, The Walt Disney Company, or any related entities. The JARVIS name and character are property of Marvel
+> Entertainment.
