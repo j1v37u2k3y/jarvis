@@ -51,15 +51,14 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
-      # Code-level security scan. Fast — runs every commit. Fails only
-      # on HIGH severity findings. Lower-severity issues (e.g. B603/B607
-      # subprocess noise from our osascript / claude integrations) are
-      # already filtered by --severity-level high; we don't blanket-skip
-      # any check IDs so that if bandit ever reclassifies one as HIGH it
-      # surfaces loud.
+      # Code-level security scan. Fast — runs every commit. ALL severities
+      # surface; the policy-level skips (subprocess noise, resilient
+      # try/except, non-crypto random) are configured in pyproject.toml's
+      # [tool.bandit] block with per-rule justification. Anything new
+      # that isn't already policy-approved fails the commit.
       - id: bandit
         name: bandit
-        entry: venv/bin/bandit -r . -x ./venv,./frontend,./tests --severity-level high -q
+        entry: venv/bin/bandit -c pyproject.toml -r . -q
         language: system
         types: [python]
         pass_filenames: false

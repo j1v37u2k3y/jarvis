@@ -205,8 +205,11 @@ class JarvisBrowser:
             await page.wait_for_timeout(1000)  # let rendering settle
 
             if not path:
-                tmp = tempfile.mktemp(suffix=".png", prefix="jarvis_screenshot_")
-                path = tmp
+                # NamedTemporaryFile avoids mktemp's race condition (CVE-class:
+                # attacker racing to create the guessed filename between name
+                # pick and our write).
+                with tempfile.NamedTemporaryFile(suffix=".png", prefix="jarvis_screenshot_", delete=False) as tmp:
+                    path = tmp.name
 
             await page.screenshot(path=path, full_page=True)
             log.info(f"Screenshot saved: {path}")
@@ -231,7 +234,8 @@ class JarvisBrowser:
                 page_content = await self.visit(r.url)
                 sources.append(r.url)
                 contents.append(f"## {r.title}\nURL: {r.url}\n\n{page_content.text_content[:1500]}")
-            except Exception:
+            except Exception as e:
+                log.debug(f"search result visit failed for {r.url!r}: {e}")
                 continue
 
         summary = "\n\n---\n\n".join(contents) if contents else "No results found."

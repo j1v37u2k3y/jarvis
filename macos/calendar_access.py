@@ -113,7 +113,8 @@ async def _fetch_calendar_events(cal_name: str, timeout: float = 12.0) -> list[d
                             "all_day": all_day,
                         }
                     )
-            except Exception:
+            except Exception as e:
+                log.debug(f"calendar {cal_name!r} row parse failed: {e}")
                 continue
 
         return events
@@ -121,8 +122,8 @@ async def _fetch_calendar_events(cal_name: str, timeout: float = 12.0) -> list[d
     except TimeoutError:
         try:
             proc.kill()
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"proc.kill after calendar timeout failed: {e}")
         log.debug(f"Calendar {cal_name} timed out")
         return []
     except Exception as e:
@@ -225,8 +226,8 @@ async def get_calendar_names() -> list[str]:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         if proc.returncode == 0:
             return [c.strip() for c in stdout.decode().strip().split(",") if c.strip()]
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"_auto_discover_calendars failed: {e}")
     return []
 
 

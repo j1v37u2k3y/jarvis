@@ -54,8 +54,10 @@ def start_context_refresh(ctx_cache: dict, interval_seconds: int = 30) -> None:
 
     def _worker() -> None:
         while True:
+            # osascript with a static embedded script (no user input).
+            # Resolves via $PATH — we run on the user's own workstation.
             with contextlib.suppress(Exception):
-                proc = subprocess.run(
+                proc = subprocess.run(  # nosec B603 B607
                     ["osascript", "-e", _SCREEN_SCRIPT],
                     capture_output=True,
                     text=True,
@@ -78,7 +80,7 @@ def start_context_refresh(ctx_cache: dict, interval_seconds: int = 30) -> None:
 
             with (
                 contextlib.suppress(Exception),
-                urllib.request.urlopen(_WEATHER_URL, timeout=3) as resp,  # noqa: S310 — hardcoded open-meteo URL
+                urllib.request.urlopen(_WEATHER_URL, timeout=3) as resp,  # noqa: S310 # nosec B310 — hardcoded open-meteo URL
             ):
                 d = json.loads(resp.read()).get("current", {})
                 temp = d.get("temperature_2m", "?")

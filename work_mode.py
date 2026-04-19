@@ -100,8 +100,13 @@ class WorkSession:
 
     async def _send_tmux(self, user_text: str) -> str:
         """Send via tmux session — type the prompt, wait for response."""
-        assert self._tmux is not None
-        assert self._working_dir is not None
+        # Explicit guards so they survive `python -O` (asserts get stripped).
+        # These invariants are set by start(); reaching _send_tmux without
+        # them means the caller used the object before starting it.
+        if self._tmux is None:
+            raise RuntimeError("_send_tmux called before start()")
+        if self._working_dir is None:
+            raise RuntimeError("_send_tmux called with no working_dir")
 
         sentinel = f"JARVIS_DONE_{uuid.uuid4().hex[:8]}"
 
@@ -227,8 +232,8 @@ class WorkSession:
         """Remove persisted session."""
         try:
             SESSION_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"_clear_session unlink failed: {e}")
 
     async def restore(self) -> bool:
         """Restore session from disk after restart. Returns True if restored."""
