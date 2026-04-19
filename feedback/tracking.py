@@ -179,5 +179,5 @@ class SuccessTracker:
         """Close the database connection."""
         try:
             self.db.close()
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"SuccessTracker db.close failed: {e}")

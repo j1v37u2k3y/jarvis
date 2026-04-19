@@ -37,8 +37,8 @@ async def _ensure_mail_running():
         if "true" in stdout.decode().lower():
             _mail_launched = True
             return
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"Mail.app running-check failed: {e}")
 
     try:
         proc = await asyncio.create_subprocess_exec(

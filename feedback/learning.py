@@ -185,5 +185,5 @@ class UsageLearner:
     def close(self):
         try:
             self.db.close()
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"UsageLearner db.close failed: {e}")

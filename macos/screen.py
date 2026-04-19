@@ -152,8 +152,8 @@ async def take_screenshot(display_only: bool = True) -> str | None:
     finally:
         try:
             Path(tmp_path).unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"screenshot cleanup failed for {tmp_path!r}: {e}")
 
 
 async def describe_screen(anthropic_client) -> str:
@@ -231,8 +231,8 @@ async def describe_screen(anthropic_client) -> str:
                 messages=[{"role": "user", "content": "Open windows:\n" + "\n".join(context_parts)}],
             )
             return response.content[0].text
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"describe_screen vision fallback failed: {e}")
 
     # Raw fallback
     if windows:

@@ -134,7 +134,7 @@ class ABTester:
             return default, experiment_id
 
         # Random selection with equal probability
-        selected = random.choice(versions)
+        selected = random.choice(versions)  # nosec B311 — A/B template picker, not a security boundary
         experiment_id = self._create_experiment(task_type, selected.version)
 
         log.info(f"Selected template {task_type} {selected.version} (experiment {experiment_id})")
@@ -266,5 +266,5 @@ class ABTester:
         """Close the database connection."""
         try:
             self.db.close()
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"ABTester db.close failed: {e}")

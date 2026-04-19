@@ -59,8 +59,8 @@ async def _mark_terminal_as_jarvis(revert_after: float = 5.0):
             asyncio.get_event_loop().call_later(
                 revert_after, lambda: asyncio.ensure_future(_revert_terminal_theme(original_profile))
             )
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"_mark_terminal_as_jarvis failed: {e}")
 
 
 async def _revert_terminal_theme(profile_name: str):
@@ -78,8 +78,8 @@ async def _revert_terminal_theme(profile_name: str):
             stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"_revert_terminal_theme({profile_name!r}) failed: {e}")
 
 
 async def open_terminal(command: str = "") -> dict:

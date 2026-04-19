@@ -2,8 +2,11 @@
 """Fast calendar event fetcher — runs per-calendar AppleScript in parallel with timeouts."""
 
 import asyncio
+import logging
 import os
 import sys
+
+log = logging.getLogger("jarvis.helpers.get_events")
 
 # Set CALENDAR_ACCOUNTS env var to a comma-separated list of calendar names/emails,
 # or leave empty to auto-discover all calendars from Apple Calendar.
@@ -63,10 +66,11 @@ async def fetch_calendar(cal_name: str, timeout: float = 5.0) -> str:
     except TimeoutError:
         try:
             proc.kill()
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"proc.kill after timeout failed: {e}")
         return ""
-    except Exception:
+    except Exception as e:
+        log.debug(f"osascript event fetch failed: {e}")
         return ""
 
 
@@ -83,8 +87,8 @@ async def discover_calendars() -> list[str]:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         if proc.returncode == 0:
             return [c.strip() for c in stdout.decode().strip().split(",") if c.strip()]
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"discover_calendars failed: {e}")
     return []
 
 

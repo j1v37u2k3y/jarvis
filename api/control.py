@@ -38,8 +38,10 @@ def build_control_router(require_auth: Callable, server_file: str) -> APIRouter:
 
         async def _restart():
             await asyncio.sleep(2)
+            # Gated on ALLOW_REMOTE_CONTROL (checked above). cmd is
+            # server_file (=__file__) + static flags — never user input.
             cmd = [sys.executable, server_file, "--port", "8340", "--host", "127.0.0.1"]
-            os.execv(sys.executable, cmd)  # noqa: S606 — server_file is __file__
+            os.execv(sys.executable, cmd)  # noqa: S606  # nosec B606
 
         asyncio.create_task(_restart())
         return {"status": "restarting"}

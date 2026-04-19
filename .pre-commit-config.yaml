@@ -26,3 +26,39 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+      # Dependency CVE scan. Slow (hits PyPI advisory DB), so scoped to
+      # pre-push rather than every commit. Catches dep vulns before they
+      # leave the machine.
+      #
+      # Ignored CVEs (documented accepted risk):
+      #   torch 2.2.2 (macOS x86_64 only — newer wheels don't exist):
+      #     CVE-2025-2953, CVE-2025-3730, PYSEC-2025-41, PYSEC-2024-259
+      #   All four are torch.load / model-loading bugs. JARVIS never
+      #   calls torch.load on user input — resemblyzer ships a baked-in
+      #   model. Linux CI + Linux deploys use torch>=2.7.1 which has
+      #   these fixed; the ignore only matters on dev workstations.
+      - id: pip-audit
+        name: pip-audit
+        entry: >
+          venv/bin/pip-audit -r requirements.txt
+          --ignore-vuln CVE-2025-2953
+          --ignore-vuln CVE-2025-3730
+          --ignore-vuln PYSEC-2025-41
+          --ignore-vuln PYSEC-2024-259
+        language: system
+        files: ^requirements(-dev)?\.txt$
+        pass_filenames: false
+        stages: [pre-push]
+
+      # Code-level security scan. Fast — runs every commit. ALL severities
+      # surface; the policy-level skips (subprocess noise, resilient
+      # try/except, non-crypto random) are configured in pyproject.toml's
+      # [tool.bandit] block with per-rule justification. Anything new
+      # that isn't already policy-approved fails the commit.
+      - id: bandit
+        name: bandit
+        entry: venv/bin/bandit -c pyproject.toml -r . -q
+        language: system
+        types: [python]
+        pass_filenames: false

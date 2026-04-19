@@ -28,30 +28,28 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests: assert is fine, /tmp paths, subprocess mocking, test auth tokens
 "tests/*" = ["S101", "S105", "S108", "S603"]
-# server.py: .env loaded before imports (E402), osascript subprocess (S603/S607),
-#   intentional try-except-pass for resilient integrations (S110/SIM105),
-#   compact one-liners in status endpoint (E701/E702),
-#   F821 are REAL BUGS — do NOT suppress (qa_agent/success_tracker undefined)
-#   S310: intentional URL open; S606: os.execv for restart
-"server.py" = ["S603", "S607", "E402", "S110", "SIM105", "E701", "E702", "S310", "S606"]
-# AppleScript integration files: subprocess calls, resilient try-except-pass
-"macos/actions.py" = ["S603", "S607", "S110"]
+# server.py: .env loaded before imports (E402); compact one-liners in
+# status endpoint (E701/E702). F821 (undefined name) is NOT suppressed
+# — those are REAL bugs.
+"server.py" = ["E402", "E701", "E702"]
+# AppleScript integration files — subprocess-by-name (osascript/claude)
+# design choice. Actual try-except sites now log.debug(...) before
+# pass/continue (see [tool.bandit] policy), so S110/S112 no longer
+# need suppression.
+"macos/actions.py" = ["S603", "S607"]
 "context_cache.py" = ["S603", "S607"]
-"macos/calendar_access.py" = ["S603", "S607", "S110", "S112", "SIM105"]
-"macos/mail_access.py" = ["S603", "S607", "S110"]
-"macos/notes_access.py" = ["S603", "S607", "S110"]
-"macos/screen.py" = ["S603", "S607", "S110", "SIM105"]
-# S101: type-narrowing asserts in _send_tmux
-"work_mode.py" = ["S603", "S607", "S110", "SIM105", "S101"]
+"macos/calendar_access.py" = ["S603", "S607"]
+"macos/mail_access.py" = ["S603", "S607"]
+"macos/notes_access.py" = ["S603", "S607"]
+"macos/screen.py" = ["S603", "S607"]
+"work_mode.py" = ["S603", "S607"]
 "qa.py" = ["S603", "S607"]
-"browser.py" = ["S603", "S607", "S112", "S306"]
-# Background/feedback modules: resilient try-except-pass
-# S311: random.choice for A/B testing, not crypto
-"feedback/ab_testing.py" = ["S110", "SIM105", "S311"]
-"feedback/learning.py" = ["S110", "SIM105"]
-"feedback/tracking.py" = ["S110", "SIM105"]
-"planner.py" = ["S110", "SIM105"]
-"helpers/get_events.py" = ["S110", "SIM105"]
+"browser.py" = ["S603", "S607"]
+# feedback/ab_testing.py uses random.choice for A/B template selection
+# (non-crypto). Other feedback modules have nothing to suppress now.
+"feedback/ab_testing.py" = ["S311"]
+# FastAPI's idiomatic dependency pattern (File(...), Form(...)) trips B008
+"api/voice.py" = ["B008"]
 # Standalone test scripts with their own .env loading
 "tests/test_classifier.py" = ["E402"]
 "tests/test_browser_integration.py" = ["S306"]
@@ -73,6 +71,9 @@ module = [
     "uvicorn",
     "playwright.*",
     "yaml",
+    "resemblyzer",
+    "soundfile",
+    "librosa",
 ]
 ignore_missing_imports = true
 
@@ -110,6 +111,31 @@ module = [
 ]
 check_untyped_defs = true
 disallow_untyped_defs = false
+
+# ---------------------------------------------------------------------------
+# Bandit — security scanner. Config here so pre-commit and CI agree.
+#
+# Policy: no --severity-level filter. Every finding surfaces. Two rules:
+#
+#   1. NEVER silently swallow exceptions. If an operation can fail and
+#      the caller should continue (external integration timing out, TCC
+#      denial, transient network blip), LOG the exception at debug
+#      level so we can diagnose when the failure recurs. Bandit's B110
+#      (try/except/pass) and B112 (try/except/continue) aren't just
+#      "style" — silent excepts hide real bugs and mask attacks.
+#      Pattern:  except Exception as e: log.debug(f"...: {e}")
+#
+#   2. Unavoidable bandit findings (subprocess-by-name, non-crypto
+#      random, os.execv for /restart) get a per-site
+#      `# nosec BXXX — <specific reason>` inline. No blanket skip.
+#
+# The ONE config-level skip:
+# B404 — `import subprocess`: informational-only; flags the import,
+#   not a risky call. Real call sites are covered by B603/B607.
+# ---------------------------------------------------------------------------
+[tool.bandit]
+skips = ["B404"]
+exclude_dirs = ["venv", "venv.py314.backup", "frontend", "tests"]
 
 # ---------------------------------------------------------------------------
 # Pytest

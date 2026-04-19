@@ -5,6 +5,8 @@
  * Slides in from the right with glass-morphism styling.
  */
 
+import type { AudioCapture } from "./audio-capture";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -32,6 +34,12 @@ interface PreferencesResponse {
   calendar_accounts: string;
 }
 
+interface VoiceStatus {
+  enrolled: boolean;
+  name: string | null;
+  sample_count: number;
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -40,6 +48,13 @@ let panelEl: HTMLElement | null = null;
 let isOpen = false;
 let isFirstTimeSetup = false;
 let setupStep = 0; // 0=anthropic, 1=fish, 2=name, 3=done
+
+let _audioCapture: AudioCapture | null = null;
+
+/** main.ts calls this once during boot so the enrollment wizard can reach the mic. */
+export function setAudioCapture(capture: AudioCapture): void {
+  _audioCapture = capture;
+}
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -171,6 +186,21 @@ function buildPanelHTML(): string {
 
           <div class="settings-actions">
             <button class="settings-btn primary" id="btn-save-prefs">Save Preferences</button>
+          </div>
+        </section>
+
+        <!-- Voice Recognition -->
+        <section class="settings-section" id="section-voice-id">
+          <h3>Voice Recognition</h3>
+          <p class="voice-id-help" id="voice-id-help">
+            JARVIS can recognize your voice and ignore commands from anyone else.
+            Record 3 short samples to enroll.
+          </p>
+          <div class="voice-id-status" id="voice-id-status"></div>
+          <div class="voice-id-wizard" id="voice-id-wizard" style="display:none"></div>
+          <div class="settings-actions">
+            <button class="settings-btn primary" id="btn-voice-enroll">Enroll Your Voice</button>
+            <button class="settings-btn" id="btn-voice-clear" style="display:none">Clear &amp; Re-enroll</button>
           </div>
         </section>
 
@@ -331,8 +361,196 @@ function wireEvents() {
     await loadStatus();
   });
 
+  // Voice enrollment
+  document.getElementById("btn-voice-enroll")?.addEventListener("click", runVoiceEnrollment);
+  document.getElementById("btn-voice-clear")?.addEventListener("click", async () => {
+    await clearVoiceProfile();
+    await loadVoiceStatus();
+  });
+
   // Setup next button
   document.getElementById("btn-setup-next")?.addEventListener("click", advanceSetup);
+}
+
+// ---------------------------------------------------------------------------
+// Voice enrollment
+// ---------------------------------------------------------------------------
+
+const ENROLLMENT_PROMPTS = [
+  "JARVIS, this is me speaking.",
+  "Good morning, JARVIS.",
+  "Run a status check on all systems.",
+];
+
+const SAMPLE_DURATION_SECONDS = 2.5;
+
+async function loadVoiceStatus() {
+  try {
+    const status = await apiGet<VoiceStatus>("/api/voice/status");
+    renderVoiceStatus(status);
+  } catch (err) {
+    console.warn("[voice-id] failed to load status:", err);
+  }
+}
+
+function renderVoiceStatus(status: VoiceStatus) {
+  const statusEl = document.getElementById("voice-id-status");
+  const helpEl = document.getElementById("voice-id-help");
+  const enrollBtn = document.getElementById("btn-voice-enroll") as HTMLButtonElement | null;
+  const clearBtn = document.getElementById("btn-voice-clear") as HTMLButtonElement | null;
+  if (!statusEl || !enrollBtn || !clearBtn) return;
+
+  if (status.enrolled) {
+    statusEl.innerHTML = `<span class="status-dot status-green"></span> Enrolled as <strong>${escapeHtml(status.name ?? "")}</strong> — ${status.sample_count} sample${status.sample_count === 1 ? "" : "s"}`;
+    enrollBtn.textContent = "Add Another Sample";
+    clearBtn.style.display = "inline-block";
+    if (helpEl) helpEl.style.display = "none";
+  } else {
+    statusEl.innerHTML = `<span class="status-dot status-off"></span> Not enrolled`;
+    enrollBtn.textContent = "Enroll Your Voice";
+    clearBtn.style.display = "none";
+    if (helpEl) helpEl.style.display = "block";
+  }
+}
+
+async function runVoiceEnrollment() {
+  if (!_audioCapture) {
+    alert("Microphone isn't ready. Refresh the page and click anywhere to grant mic access, then try again.");
+    return;
+  }
+  if (!_audioCapture.isRunning()) {
+    try {
+      await _audioCapture.start();
+    } catch (err) {
+      alert("Couldn't access the microphone. Grant mic permission and try again.");
+      console.error(err);
+      return;
+    }
+  }
+
+  const wizardEl = document.getElementById("voice-id-wizard");
+  const enrollBtn = document.getElementById("btn-voice-enroll") as HTMLButtonElement | null;
+  const clearBtn = document.getElementById("btn-voice-clear") as HTMLButtonElement | null;
+  if (!wizardEl || !enrollBtn) return;
+
+  enrollBtn.disabled = true;
+  if (clearBtn) clearBtn.disabled = true;
+  wizardEl.style.display = "block";
+
+  // Always use the user's configured name if present, else fall back to "me"
+  let speakerName = "me";
+  try {
+    const prefs = await apiGet<PreferencesResponse>("/api/settings/preferences");
+    if (prefs.user_name) speakerName = prefs.user_name.trim() || "me";
+  } catch {
+    // Fall back to "me"
+  }
+
+  let finalStatus: VoiceStatus | null = null;
+  try {
+    for (let i = 0; i < ENROLLMENT_PROMPTS.length; i++) {
+      finalStatus = await captureOneSample(wizardEl, ENROLLMENT_PROMPTS[i], i + 1, ENROLLMENT_PROMPTS.length, speakerName);
+      if (finalStatus === null) break; // error
+    }
+
+    if (finalStatus) {
+      wizardEl.innerHTML = `<div class="voice-id-step"><p><strong>Enrolled.</strong> I now recognize your voice, sir.</p></div>`;
+      await loadVoiceStatus();
+      setTimeout(() => {
+        if (wizardEl) wizardEl.style.display = "none";
+      }, 2500);
+    }
+  } finally {
+    enrollBtn.disabled = false;
+    if (clearBtn) clearBtn.disabled = false;
+  }
+}
+
+/** Record one sample with a countdown + record indicator. Returns the
+ *  resulting VoiceStatus from the server, or null on error. */
+async function captureOneSample(
+  wizardEl: HTMLElement,
+  prompt: string,
+  step: number,
+  totalSteps: number,
+  speakerName: string,
+): Promise<VoiceStatus | null> {
+  // Countdown 3-2-1
+  for (const n of ["3", "2", "1"]) {
+    wizardEl.innerHTML = `
+      <div class="voice-id-step">
+        <div class="voice-id-progress">Sample ${step} / ${totalSteps}</div>
+        <p>Say: <em>"${escapeHtml(prompt)}"</em></p>
+        <div class="voice-id-countdown">${n}</div>
+      </div>`;
+    await delay(700);
+  }
+
+  // Recording
+  wizardEl.innerHTML = `
+    <div class="voice-id-step">
+      <div class="voice-id-progress">Sample ${step} / ${totalSteps}</div>
+      <p>Say: <em>"${escapeHtml(prompt)}"</em></p>
+      <div class="voice-id-recording">🎙️ Recording…</div>
+    </div>`;
+
+  if (!_audioCapture) return null;
+  let blob: Blob;
+  try {
+    blob = await _audioCapture.recordSample(SAMPLE_DURATION_SECONDS);
+  } catch (err) {
+    wizardEl.innerHTML = `<div class="voice-id-step voice-id-error">Couldn't record. ${escapeHtml(String(err))}</div>`;
+    return null;
+  }
+
+  // Uploading
+  wizardEl.innerHTML = `
+    <div class="voice-id-step">
+      <div class="voice-id-progress">Sample ${step} / ${totalSteps}</div>
+      <p>Processing…</p>
+    </div>`;
+
+  const form = new FormData();
+  form.append("name", speakerName);
+  form.append("audio", blob, `enroll-${step}.wav`);
+  const token = await ensureAuthToken();
+  try {
+    const res = await fetch("/api/voice/enroll", {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      wizardEl.innerHTML = `<div class="voice-id-step voice-id-error">Upload failed: ${escapeHtml(data.error ?? "unknown error")}</div>`;
+      return null;
+    }
+    return { enrolled: true, name: speakerName, sample_count: data.sample_count };
+  } catch (err) {
+    wizardEl.innerHTML = `<div class="voice-id-step voice-id-error">Network error: ${escapeHtml(String(err))}</div>`;
+    return null;
+  }
+}
+
+async function clearVoiceProfile() {
+  const token = await ensureAuthToken();
+  await fetch("/api/voice/enroll", {
+    method: "DELETE",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  const wizardEl = document.getElementById("voice-id-wizard");
+  if (wizardEl) {
+    wizardEl.style.display = "none";
+    wizardEl.innerHTML = "";
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +637,7 @@ export async function openSettings() {
   // Load data
   const status = await loadStatus();
   await loadPreferences();
+  await loadVoiceStatus();
 
   // Check for first-time setup
   if (status && !status.env_keys_set.anthropic) {

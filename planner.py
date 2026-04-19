@@ -348,8 +348,8 @@ async def gather_project_context(project_path: str) -> dict:
         context["directory_listing"] = sorted(
             [entry.name + ("/" if entry.is_dir() else "") for entry in path.iterdir() if not entry.name.startswith(".")]
         )[:30]  # cap at 30 entries
-    except PermissionError:
-        pass
+    except PermissionError as e:
+        log.debug(f"directory listing denied for {path!r}: {e}")
 
     # Key config files
     for filename, key in [
@@ -366,8 +366,8 @@ async def gather_project_context(project_path: str) -> dict:
                 if len(content) > 2000:
                     content = content[:2000] + "\n... (truncated)"
                 context[key] = content
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"project context file read failed ({key}): {e}")
 
     # Git log
     import asyncio
@@ -385,8 +385,8 @@ async def gather_project_context(project_path: str) -> dict:
         stdout, _ = await proc.communicate()
         if proc.returncode == 0:
             context["git_log"] = stdout.decode().strip()
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"git log fetch failed: {e}")
 
     return context
 
