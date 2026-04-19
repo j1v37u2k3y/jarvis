@@ -469,3 +469,81 @@ html, body {
   color: rgba(14, 165, 233, 0.9);
   border-color: rgba(14, 165, 233, 0.4);
 }
+
+/* ---------------------------------------------------------------------------
+   Voice Recognition (enrollment wizard)
+   --------------------------------------------------------------------------- */
+
+.voice-id-help {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 12px 0;
+}
+
+.voice-id-status {
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.voice-id-wizard {
+  padding: 16px;
+  background: rgba(14, 165, 233, 0.06);
+  border: 1px solid rgba(14, 165, 233, 0.18);
+  border-radius: 10px;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.voice-id-step .voice-id-progress {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(14, 165, 233, 0.8);
+  margin-bottom: 10px;
+}
+
+.voice-id-step p {
+  margin: 0 0 14px 0;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+}
+
+.voice-id-step em {
+  color: #67e8f9;
+  font-style: normal;
+}
+
+.voice-id-countdown {
+  font-size: 36px;
+  font-weight: 300;
+  color: rgba(255, 255, 255, 0.9);
+  line-height: 1;
+}
+
+.voice-id-recording {
+  font-size: 16px;
+  color: #ef4444;
+  animation: voice-id-pulse 1s ease-in-out infinite;
+}
+
+@keyframes voice-id-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.voice-id-error {
+  color: #ef4444;
+}

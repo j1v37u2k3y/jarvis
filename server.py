@@ -9,11 +9,13 @@ Handles:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import secrets
 import time
+import uuid
 from pathlib import Path
 
 # Load .env file if present
@@ -31,6 +33,7 @@ import anthropic
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+import voice_id
 from api import build_control_router, build_core_router, build_settings_router, build_voice_router
 from context_cache import start_context_refresh
 from dispatch_registry import DispatchRegistry
@@ -352,6 +355,10 @@ async def voice_handler(ws: WebSocket):
     # Audio collision prevention — track when user last spoke
     voice_state = {"last_user_time": 0.0}
 
+    # Unique ID for this WS connection — keys the voice_id verification cache
+    # so reconnects don't inherit a stale "verified" status.
+    ws_id = uuid.uuid4().hex
+
     # Self-awareness — track last spoken response to avoid repetition
     last_jarvis_response = ""
 
@@ -408,6 +415,31 @@ async def voice_handler(ws: WebSocket):
             user_text = apply_speech_corrections(text.strip())
             if not user_text:
                 continue
+
+            # ── Speaker verification gate ──
+            # Soft mode: if no profile is enrolled yet, accept any voice.
+            # Strict mode (post-enrollment): require matching audio. If a
+            # matching audio_b64 isn't attached, treat as "old frontend"
+            # and nudge the user to refresh rather than silently accepting.
+            if voice_id.is_enrolled():
+                audio_b64 = msg.get("audio_b64")
+                if isinstance(audio_b64, str) and audio_b64:
+                    try:
+                        result = voice_id.verify_cached_or_new(ws_id, base64.b64decode(audio_b64))
+                    except Exception as e:
+                        log.warning(f"Speaker verify raised {e!r} — dropping command for safety")
+                        await speak(ws, "I had trouble with that audio, sir. Try again.")
+                        continue
+                    if not result.recognized:
+                        log.info(
+                            f"Unknown speaker (similarity={result.similarity:.2f}) — dropping command: {user_text[:60]}"
+                        )
+                        await speak(ws, "I don't recognize that voice, sir.")
+                        continue
+                else:
+                    log.info("Enrolled but transcript had no audio_b64 — asking user to refresh")
+                    await speak(ws, "I need to hear you to confirm, sir. Try refreshing your browser.")
+                    continue
 
             # Cancel any in-flight response
             _current_response_id += 1
@@ -542,6 +574,7 @@ async def voice_handler(ws: WebSocket):
         log.error(f"WebSocket error: {e}", exc_info=True)
     finally:
         task_manager.unregister_websocket(ws)
+        voice_id.clear_cache(ws_id)
 
 
 # ---------------------------------------------------------------------------

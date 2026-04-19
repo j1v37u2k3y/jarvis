@@ -7,8 +7,9 @@
 
 import { createOrb, type OrbState } from "./orb";
 import { createVoiceInput, createAudioPlayer } from "./voice";
+import { createAudioCapture } from "./audio-capture";
 import { createSocket } from "./ws";
-import { openSettings, checkFirstTimeSetup } from "./settings";
+import { openSettings, checkFirstTimeSetup, setAudioCapture } from "./settings";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -54,6 +55,23 @@ const socket = createSocket(WS_URL);
 const audioPlayer = createAudioPlayer();
 orb.setAnalyser(audioPlayer.getAnalyser());
 
+// Continuous mic capture (for speaker-ID) — shares the mic with Web
+// Speech API but is its own stream. Started lazily on first user
+// interaction to respect browser autoplay policy.
+const audioCapture = createAudioCapture();
+setAudioCapture(audioCapture); // settings panel uses it for enrollment
+
+async function ensureAudioCapture() {
+  if (!audioCapture.isRunning()) {
+    try {
+      await audioCapture.start();
+      console.log("[audio-capture] started");
+    } catch (err) {
+      console.warn("[audio-capture] failed to start:", err);
+    }
+  }
+}
+
 function transition(newState: State) {
   if (newState === currentState) return;
   currentState = newState;
@@ -84,8 +102,11 @@ const voiceInput = createVoiceInput(
   (text: string) => {
     // Cancel any current JARVIS response before sending new input
     audioPlayer.stop();
-    // User spoke — send transcript
-    socket.send({ type: "transcript", text, isFinal: true });
+    // Snapshot the last 2s of mic audio so the backend can verify the
+    // speaker. null if audio-capture hasn't started yet (first utterance
+    // before user interaction) — server treats missing audio as soft mode.
+    const audioB64 = audioCapture.snapshot(2);
+    socket.send({ type: "transcript", text, isFinal: true, audio_b64: audioB64 });
     transition("thinking");
   },
   (msg: string) => {
@@ -164,6 +185,11 @@ function ensureAudioContext() {
 document.addEventListener("click", ensureAudioContext);
 document.addEventListener("touchstart", ensureAudioContext);
 document.addEventListener("keydown", ensureAudioContext, { once: true });
+
+// Start mic capture on first interaction (browser requires a gesture to
+// grant mic permission for AudioContext-based capture).
+document.addEventListener("click", ensureAudioCapture, { once: true });
+document.addEventListener("keydown", ensureAudioCapture, { once: true });
 
 // Try to resume audio context on load
 ensureAudioContext();
