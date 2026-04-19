@@ -206,12 +206,14 @@ const btnFixSelf = document.getElementById("btn-fix-self")!;
 const textInput = document.getElementById("text-input") as HTMLInputElement;
 const textSend = document.getElementById("text-send")!;
 
-// Text input — sends through same path as voice
+// Text input — sends through same path as voice, but marked `source: "text"`
+// so the backend speaker-ID gate skips it (typed-into-authenticated-browser
+// is a different trust surface than "voice within mic range").
 function sendTextMessage() {
   const text = textInput.value.trim();
   if (!text) return;
   audioPlayer.stop();
-  socket.send({ type: "transcript", text, isFinal: true });
+  socket.send({ type: "transcript", text, isFinal: true, source: "text" });
   transition("thinking");
   textInput.value = "";
 }

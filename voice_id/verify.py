@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .embedding import compute_embedding
-from .storage import get_canonical_embedding
+from .storage import get_canonical_embedding, is_enrolled
 
 log = logging.getLogger("jarvis.voice_id.verify")
 
@@ -36,6 +36,22 @@ class VerifyResult:
 
 
 _cache: dict[str, tuple[float, int]] = {}  # ws_id -> (verified_at, profile_id)
+
+
+def should_verify_speaker(msg: dict) -> bool:
+    """Decide whether an incoming WebSocket message needs speaker verification.
+
+    Rules:
+    - Not enrolled yet → skip (soft bootstrap mode)
+    - source == "text" → skip (typed input; auth token is the gate here,
+      not voice ID, which is specifically about "voice within mic range")
+    - Otherwise → verify
+
+    Returns True when the voice_handler should run the audio check.
+    """
+    if not is_enrolled():
+        return False
+    return msg.get("source") != "text"
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
