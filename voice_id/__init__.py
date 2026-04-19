@@ -11,7 +11,7 @@ Public API (backend, consumed by api/voice.py and server.py voice_handler):
 """
 
 from .storage import clear_profile, enroll_sample, get_status, is_enrolled
-from .verify import VerifyResult, clear_cache, verify_cached_or_new
+from .verify import VerifyResult, clear_cache, should_verify_speaker, verify_cached_or_new
 
 __all__ = [
     "VerifyResult",
@@ -20,5 +20,6 @@ __all__ = [
     "enroll_sample",
     "get_status",
     "is_enrolled",
+    "should_verify_speaker",
     "verify_cached_or_new",
 ]

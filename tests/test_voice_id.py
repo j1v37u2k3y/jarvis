@@ -307,3 +307,54 @@ class TestRESTEndpoints:
 
         r = client.get("/api/voice/status", headers={"Authorization": "Bearer "})
         assert r.json()["enrolled"] is False
+
+
+# ---------------------------------------------------------------------------
+# Voice handler gate behavior (WebSocket-level)
+# ---------------------------------------------------------------------------
+
+
+class TestShouldVerifySpeaker:
+    """The policy function that the voice_handler gate calls.
+
+    Regression coverage for: "typed text input bypasses the speaker gate"
+    and "voice input still needs verification post-enrollment."
+    """
+
+    def test_skips_when_not_enrolled(self, isolated_voice_id):
+        from voice_id import should_verify_speaker
+
+        msg = {"type": "transcript", "text": "hi", "isFinal": True}
+        assert should_verify_speaker(msg) is False, "soft bootstrap: no profile → no verification"
+
+    def test_skips_text_input_even_when_enrolled(self, isolated_voice_id):
+        """The bug that shipped in voice-id v1: text input got blocked
+        with "I need to hear you to confirm, sir. Try refreshing…"
+        because the gate checked only is_enrolled(). Fix added
+        source="text" check."""
+        from voice_id import enroll_sample, should_verify_speaker
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+
+        text_msg = {"type": "transcript", "text": "hi", "isFinal": True, "source": "text"}
+        assert should_verify_speaker(text_msg) is False, "typed input must skip the voice gate"
+
+    def test_verifies_voice_input_when_enrolled(self, isolated_voice_id):
+        from voice_id import enroll_sample, should_verify_speaker
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+
+        voice_msg = {"type": "transcript", "text": "hi", "isFinal": True}
+        assert should_verify_speaker(voice_msg) is True, "voice input must still hit the gate"
+
+    def test_unknown_source_is_treated_as_voice(self, isolated_voice_id):
+        """Defensive: any source value other than "text" falls into voice
+        verification. Prevents a future refactor from coining a new source
+        label (e.g. "api") that silently bypasses the check."""
+        from voice_id import enroll_sample, should_verify_speaker
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+
+        for source in ["voice", "api", "whatever", ""]:
+            msg = {"type": "transcript", "text": "hi", "isFinal": True, "source": source}
+            assert should_verify_speaker(msg) is True, f"source={source!r} must not bypass"

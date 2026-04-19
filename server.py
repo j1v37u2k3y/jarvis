@@ -417,11 +417,10 @@ async def voice_handler(ws: WebSocket):
                 continue
 
             # ── Speaker verification gate ──
-            # Soft mode: if no profile is enrolled yet, accept any voice.
-            # Strict mode (post-enrollment): require matching audio. If a
-            # matching audio_b64 isn't attached, treat as "old frontend"
-            # and nudge the user to refresh rather than silently accepting.
-            if voice_id.is_enrolled():
+            # Policy lives in voice_id.should_verify_speaker (see its docstring).
+            # Skipped when: not enrolled yet (soft bootstrap), or source="text"
+            # (typed input is gated by the auth token, not the mic).
+            if voice_id.should_verify_speaker(msg):
                 audio_b64 = msg.get("audio_b64")
                 if isinstance(audio_b64, str) and audio_b64:
                     try:
@@ -437,7 +436,7 @@ async def voice_handler(ws: WebSocket):
                         await speak(ws, "I don't recognize that voice, sir.")
                         continue
                 else:
-                    log.info("Enrolled but transcript had no audio_b64 — asking user to refresh")
+                    log.info("Enrolled but voice transcript had no audio_b64 — asking user to refresh")
                     await speak(ws, "I need to hear you to confirm, sir. Try refreshing your browser.")
                     continue
 
