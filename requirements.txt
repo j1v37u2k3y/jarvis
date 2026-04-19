@@ -15,10 +15,18 @@ slowapi==0.1.9
 # for this platform. torch 2.2.2 was compiled against numpy 1.x ABI, so
 # numpy<2 is required. webrtcvad (resemblyzer dep) uses the deprecated
 # pkg_resources API that setuptools>=81 removed, so setuptools<80.
+#
+# torch: PyTorch stopped shipping x86_64 macOS wheels after 2.2.2.
+# CVE fixes (2.5+, 2.6+, 2.7.1+, 2.8+) are Linux/ARM-only on macOS.
+# Linux CI and Linux deploys pull >=2.7.1 (CVE-free). macOS x86_64 dev
+# workstations stay on 2.2.2 — documented known CVEs affect dev boxes
+# only, no production surface on x86_64 macOS.
+torch>=2.7.1; platform_system != "Darwin" or platform_machine != "x86_64"
+torch==2.2.2; platform_system == "Darwin" and platform_machine == "x86_64"
 resemblyzer==0.1.4
 llvmlite==0.43.0
 numba==0.60.0
 librosa==0.10.2.post1
 numpy<2
 setuptools<80
-python-multipart==0.0.20   # FastAPI UploadFile — needed by /api/voice/enroll
+python-multipart==0.0.26   # FastAPI UploadFile — fixes CVE-2026-24486, CVE-2026-40347
