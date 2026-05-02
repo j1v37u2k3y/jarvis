@@ -7,6 +7,7 @@ asyncio event loop.
 import contextlib
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -42,9 +43,15 @@ end tell
 return windowList
 """
 
+# Location pin via env vars — VPN-proof, no IP geolocation.
+# Defaults to Cockeysville, MD if unset.
+_LATITUDE = os.getenv("JARVIS_LATITUDE", "27.77")
+_LONGITUDE = os.getenv("JARVIS_LONGITUDE", "-82.64")
+_CITY = os.getenv("JARVIS_CITY", "St. Petersburg, FL")
+
 _WEATHER_URL = (
     "https://api.open-meteo.com/v1/forecast"
-    "?latitude=27.77&longitude=-82.64"
+    f"?latitude={_LATITUDE}&longitude={_LONGITUDE}"
     "&current=temperature_2m,weathercode&temperature_unit=fahrenheit"
 )
 
@@ -84,7 +91,7 @@ def start_context_refresh(ctx_cache: dict, interval_seconds: int = 30) -> None:
             ):
                 d = json.loads(resp.read()).get("current", {})
                 temp = d.get("temperature_2m", "?")
-                ctx_cache["weather"] = f"Current weather in St. Petersburg, FL: {temp}°F"
+                ctx_cache["weather"] = f"Current weather in {_CITY}: {temp}°F"
 
             time.sleep(interval_seconds)
 
