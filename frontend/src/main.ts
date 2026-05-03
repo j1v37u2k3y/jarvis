@@ -74,6 +74,7 @@ async function ensureAudioCapture() {
 
 function transition(newState: State) {
   if (newState === currentState) return;
+  console.log(`[state] ${currentState} → ${newState}`);
   currentState = newState;
   orb.setState(newState as OrbState);
   updateStatus(newState);
@@ -81,15 +82,22 @@ function transition(newState: State) {
   switch (newState) {
     case "idle":
       if (!isMuted) voiceInput.resume();
+      audioCapture.resume();
       break;
     case "listening":
       if (!isMuted) voiceInput.resume();
+      audioCapture.resume();
       break;
     case "thinking":
       voiceInput.pause();
+      // Keep audio-capture running so the snapshot we just sent has fresh
+      // tail audio, and so we have a buffer ready when we transition back.
       break;
     case "speaking":
       voiceInput.pause();
+      // Suspend mic capture while JARVIS talks — prevents JARVIS's own
+      // voice from filling the ring buffer and biasing the next snapshot.
+      audioCapture.suspend();
       break;
   }
 }

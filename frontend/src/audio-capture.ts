@@ -27,6 +27,10 @@ const RING_BUFFER_SAMPLES = SAMPLE_RATE * RING_BUFFER_SECONDS;
 export interface AudioCapture {
   start(): Promise<void>;
   stop(): void;
+  /** Pause the worklet without releasing the mic — cheap and reversible. */
+  suspend(): Promise<void>;
+  /** Resume after suspend(). No-op if never started or already running. */
+  resume(): Promise<void>;
   /** Last `seconds` of audio as base64 int16 PCM. null if no audio yet. */
   snapshot(seconds: number): string | null;
   /** Record `seconds` of fresh audio starting now, return as a WAV Blob. */
@@ -80,12 +84,15 @@ export function createAudioCapture(): AudioCapture {
   return {
     async start() {
       if (audioCtx) return;
+      // EC/NS/AGC disabled so this stream doesn't fight Web Speech API's own
+      // mic capture in Chrome. Resemblyzer (server-side speaker-ID) prefers
+      // raw audio and does its own normalization.
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
         },
       });
       audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
@@ -97,6 +104,20 @@ export function createAudioCapture(): AudioCapture {
       // Note: we do NOT connect workletNode to destination — we don't
       // want to play the mic back through speakers. It processes fine
       // without being routed to output.
+    },
+
+    async suspend() {
+      if (audioCtx && audioCtx.state === "running") {
+        await audioCtx.suspend();
+        console.log("[audio-capture] suspended");
+      }
+    },
+
+    async resume() {
+      if (audioCtx && audioCtx.state === "suspended") {
+        await audioCtx.resume();
+        console.log("[audio-capture] resumed");
+      }
     },
 
     stop() {

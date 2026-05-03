@@ -35,6 +35,10 @@ export function createVoiceInput(
   let shouldListen = false;
   let paused = false;
 
+  recognition.onstart = () => {
+    console.log("[voice] onstart");
+  };
+
   recognition.onresult = (event: any) => {
     for (let i = event.resultIndex; i < event.results.length; i++) {
       if (event.results[i].isFinal) {
@@ -45,26 +49,24 @@ export function createVoiceInput(
   };
 
   recognition.onend = () => {
+    console.log("[voice] onend", { shouldListen, paused });
     if (shouldListen && !paused) {
       try {
         recognition.start();
-      } catch {
-        // Already started
+      } catch (err) {
+        console.warn("[voice] start() in onend threw:", err);
       }
     }
   };
 
   recognition.onerror = (event: any) => {
+    console.warn("[voice] onerror:", event.error);
     if (event.error === "not-allowed") {
       onError("Microphone access denied. Please allow microphone access.");
       shouldListen = false;
-    } else if (event.error === "no-speech") {
-      // Normal, just restart
-    } else if (event.error === "aborted") {
-      // Expected during pause
-    } else {
-      console.warn("[voice] recognition error:", event.error);
     }
+    // Other errors (no-speech, aborted, audio-capture, network) rely on
+    // onend firing afterward to drive the restart in shouldListen mode.
   };
 
   return {
