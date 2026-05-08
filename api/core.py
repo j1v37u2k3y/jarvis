@@ -24,6 +24,7 @@ from usage import (
     cost_from_tokens,
     get_usage_for_period,
 )
+from version import __version__
 from work_mode import session_manager
 
 
@@ -42,7 +43,7 @@ def build_core_router(
 
     @router.get("/api/health")
     async def health():
-        return {"status": "online", "name": "JARVIS", "version": "0.1.0"}
+        return {"status": "online", "name": "JARVIS", "version": __version__}
 
     @router.get("/api/tts-test", dependencies=[Depends(require_auth)])
     async def tts_test():

@@ -65,6 +65,7 @@ from usage import (
 from usage import (
     cost_from_tokens as _cost_from_tokens,  # noqa: F401
 )
+from version import __version__
 from voice import (
     SessionMemory,
     detect_action_fast,  # noqa: F401 — re-exported for tests
@@ -241,7 +242,7 @@ async def lifespan(application: FastAPI):
         await rick_bridge.stop()
 
 
-app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="JARVIS Server", version=__version__, lifespan=lifespan)
 
 # Rate limiting — defense in depth. Single-user localhost means 60/min is generous.
 # If you expose JARVIS to a network, reduce this or add per-route limits.
@@ -649,7 +650,7 @@ if __name__ == "__main__":
     ws_proto = "wss" if use_ssl else "ws"
 
     print()
-    print("  J.A.R.V.I.S. Server v0.1.0")
+    print(f"  J.A.R.V.I.S. Server v{__version__}")
     print(f"  WebSocket: {ws_proto}://{args.host}:{args.port}/ws/voice")
     print(f"  REST API:  {proto}://{args.host}:{args.port}/api/")
     print(f"  Tasks:     {proto}://{args.host}:{args.port}/api/tasks")

@@ -1,0 +1,103 @@
+name: Version bump
+
+# Bumps pyproject.toml + tags + creates a release when a PR merges to main.
+# Bump size is driven by PR labels: `major`, `minor`, or `patch`. No label = patch.
+# Conflicting labels resolve by precedence: major > minor > patch.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Determine bump from PR labels
+        id: bump
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          python3 <<'PY'
+          import json, os
+          labels = set(json.loads(os.environ["LABELS"]))
+          if "major" in labels:
+              bump = "major"
+          elif "minor" in labels:
+              bump = "minor"
+          else:
+              bump = "patch"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"bump={bump}\n")
+          print(f"bump={bump}")
+          PY
+
+      - name: Compute new version
+        id: version
+        run: |
+          python3 <<'PY'
+          import os, re, pathlib
+          bump = "${{ steps.bump.outputs.bump }}"
+          path = pathlib.Path("pyproject.toml")
+          text = path.read_text()
+          m = re.search(r'^version = "(\d+)\.(\d+)\.(\d+)"', text, re.M)
+          major, minor, patch = map(int, m.groups())
+          old = f"{major}.{minor}.{patch}"
+          if bump == "major":
+              major, minor, patch = major + 1, 0, 0
+          elif bump == "minor":
+              minor, patch = minor + 1, 0
+          else:
+              patch += 1
+          new = f"{major}.{minor}.{patch}"
+          path.write_text(re.sub(
+              r'^version = "\d+\.\d+\.\d+"',
+              f'version = "{new}"',
+              text, count=1, flags=re.M,
+          ))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"old={old}\n")
+              f.write(f"new={new}\n")
+          print(f"{old} -> {new}")
+          PY
+
+      - name: Commit, tag, push
+        env:
+          NEW: ${{ steps.version.outputs.new }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "chore: bump version to ${NEW} [skip ci]"
+          git tag "v${NEW}"
+          git push origin main
+          git push origin "v${NEW}"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.new }}
+          name: v${{ steps.version.outputs.new }}
+          body: |
+            **${{ steps.version.outputs.old }} → ${{ steps.version.outputs.new }}** (${{ steps.bump.outputs.bump }})
+
+            From PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}
+          generate_release_notes: true
