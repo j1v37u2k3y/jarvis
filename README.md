@@ -138,6 +138,24 @@ When JARVIS dispatches a Claude Code session from this directory, those MCP tool
 automatically available. Mention the server by name in your prompt (e.g., "use the rick_mcp
 tools for this") and Claude will discover and invoke them.
 
+#### Direct rick_mcp bridge (in-process)
+
+In addition to the spawn-a-Claude-Code path above, JARVIS connects directly to `rick_mcp`
+on startup so the voice loop can call rick tools as native Anthropic tool-use — no
+subprocess round-trip. See `rick_bridge.py`.
+
+- **8 tools voice-callable**: `rick_recon_handle`, `rick_cve`, `rick_cheatsheet`,
+  `rick_mantra`, `rick_capabilities`, `rick_status`, `rick_threat_model`,
+  `rick_tool_recommend`. Other rick tools (kill chain, full auto, tracker, career)
+  remain available via the spawned-session path.
+- **5 principle resources injected** into JARVIS's system prompt: `values`,
+  `craftsmanship`, `heritage`, `mantras`, `summary`. JARVIS keeps its British butler
+  voice but its judgments carry rick's foundation.
+- **Configurable paths**: `RICK_MCP_PYTHON` and `RICK_MCP_PATH` env vars override the
+  defaults (the rick venv + `rick_mcp.py`). If rick can't be reached at startup, the
+  bridge stays disabled and JARVIS continues without it — security questions fall back
+  to the spawn path automatically.
+
 ### Threat Model
 
 JARVIS is designed for **single-user, localhost-only** operation:

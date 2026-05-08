@@ -56,6 +56,7 @@ from planner import TaskPlanner
 from projects import scan_projects
 from projects import scan_projects_sync as _scan_projects_sync
 from qa import QAAgent
+from rick_bridge import RickBridge, try_start_bridge
 from suggestions import suggest_followup
 from task_manager import ClaudeTaskManager
 from usage import (
@@ -118,6 +119,7 @@ task_manager = ClaudeTaskManager(
 anthropic_client: anthropic.AsyncAnthropic | None = None
 cached_projects: list[dict] = []
 dispatch_registry = DispatchRegistry()
+rick_bridge: RickBridge | None = None
 
 # Background context cache — never blocks responses
 _ctx_cache = {
@@ -151,6 +153,7 @@ async def generate_response(
         last_response=last_response,
         session_summary=session_summary,
         lookup_status=get_lookup_status(),
+        rick_bridge=rick_bridge,
     )
 
 
@@ -198,7 +201,7 @@ _AUTH_TOKEN: str = ""
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    global anthropic_client, cached_projects, _AUTH_TOKEN
+    global anthropic_client, cached_projects, _AUTH_TOKEN, rick_bridge
     _AUTH_TOKEN = secrets.token_urlsafe(32)
     print(f"  Auth token: {_AUTH_TOKEN[:8]}... (use /auth/token endpoint for full token)")
     if ANTHROPIC_API_KEY:
@@ -206,6 +209,8 @@ async def lifespan(application: FastAPI):
     else:
         log.warning("ANTHROPIC_API_KEY not set — LLM features disabled")
     cached_projects = []
+
+    rick_bridge = await try_start_bridge()
 
     # Start context refresh in a separate thread (never touches event loop)
     start_context_refresh(_ctx_cache)
@@ -232,6 +237,8 @@ async def lifespan(application: FastAPI):
     yield
 
     inbox_task.cancel()
+    if rick_bridge is not None:
+        await rick_bridge.stop()
 
 
 app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
