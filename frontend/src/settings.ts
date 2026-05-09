@@ -56,6 +56,38 @@ export function setAudioCapture(capture: AudioCapture): void {
   _audioCapture = capture;
 }
 
+let _onEnrollmentChange: ((active: boolean) => void) | null = null;
+
+/** main.ts wires this to pause the Web Speech API loop and any in-flight TTS
+ *  while the wizard is recording — otherwise the main listener transcribes
+ *  the enrollment phrase as a voice command. */
+export function setEnrollmentStateHandler(fn: (active: boolean) => void): void {
+  _onEnrollmentChange = fn;
+}
+
+/** Used by main.ts on boot to gate the voice loop: returns true once a
+ *  speaker is enrolled, false otherwise. Reuses the existing auth helper. */
+export async function isVoiceEnrolled(): Promise<boolean> {
+  try {
+    const status = await apiGet<{ enrolled: boolean }>("/api/voice/status");
+    return !!status.enrolled;
+  } catch {
+    // If the endpoint is unreachable, fail open — let the user try to use
+    // voice. The server-side speaker-ID gate will still reject if needed.
+    return true;
+  }
+}
+
+/** Fetch the canned "please enroll" TTS line as base64. null on failure. */
+export async function fetchEnrollPromptAudio(): Promise<string | null> {
+  try {
+    const res = await apiGet<{ audio: string | null }>("/api/voice/enroll-prompt");
+    return res.audio ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------
@@ -382,8 +414,6 @@ const ENROLLMENT_PROMPTS = [
   "Run a status check on all systems.",
 ];
 
-const SAMPLE_DURATION_SECONDS = 2.5;
-
 async function loadVoiceStatus() {
   try {
     const status = await apiGet<VoiceStatus>("/api/voice/status");
@@ -427,6 +457,9 @@ async function runVoiceEnrollment() {
       return;
     }
   }
+  // Defensive: the main app's state machine suspends audio-capture when JARVIS
+  // is speaking. Resume here so the wizard isn't recording into a paused ctx.
+  await _audioCapture.resume();
 
   const wizardEl = document.getElementById("voice-id-wizard");
   const enrollBtn = document.getElementById("btn-voice-enroll") as HTMLButtonElement | null;
@@ -436,6 +469,10 @@ async function runVoiceEnrollment() {
   enrollBtn.disabled = true;
   if (clearBtn) clearBtn.disabled = true;
   wizardEl.style.display = "block";
+
+  // Pause the main voice loop so it doesn't transcribe the enrollment phrase
+  // as a command. main.ts handles the resume on the false call.
+  _onEnrollmentChange?.(true);
 
   // Always use the user's configured name if present, else fall back to "me"
   let speakerName = "me";
@@ -449,7 +486,13 @@ async function runVoiceEnrollment() {
   let finalStatus: VoiceStatus | null = null;
   try {
     for (let i = 0; i < ENROLLMENT_PROMPTS.length; i++) {
-      finalStatus = await captureOneSample(wizardEl, ENROLLMENT_PROMPTS[i], i + 1, ENROLLMENT_PROMPTS.length, speakerName);
+      finalStatus = await captureOneSampleVAD(
+        wizardEl,
+        ENROLLMENT_PROMPTS[i],
+        i + 1,
+        ENROLLMENT_PROMPTS.length,
+        speakerName,
+      );
       if (finalStatus === null) break; // error
     }
 
@@ -463,73 +506,121 @@ async function runVoiceEnrollment() {
   } finally {
     enrollBtn.disabled = false;
     if (clearBtn) clearBtn.disabled = false;
+    _onEnrollmentChange?.(false);
   }
 }
 
-/** Record one sample with a countdown + record indicator. Returns the
- *  resulting VoiceStatus from the server, or null on error. */
-async function captureOneSample(
+/** Record one sample using voice-activity detection — waits for speech onset,
+ *  ends on trailing silence, shows a live RMS meter. Loops on no-speech /
+ *  too-short outcomes via a Retry button. Returns the resulting VoiceStatus
+ *  from the server, or null on hard error. */
+async function captureOneSampleVAD(
   wizardEl: HTMLElement,
   prompt: string,
   step: number,
   totalSteps: number,
   speakerName: string,
 ): Promise<VoiceStatus | null> {
-  // Countdown 3-2-1
-  for (const n of ["3", "2", "1"]) {
+  if (!_audioCapture) return null;
+
+  // Retry loop — only the upload path falls through to the return.
+  for (;;) {
     wizardEl.innerHTML = `
       <div class="voice-id-step">
         <div class="voice-id-progress">Sample ${step} / ${totalSteps}</div>
         <p>Say: <em>"${escapeHtml(prompt)}"</em></p>
-        <div class="voice-id-countdown">${n}</div>
+        <div class="voice-id-listening" id="vad-label">Listening for your voice…</div>
+        <div class="voice-id-meter"><div class="voice-id-meter-fill" id="vad-meter-fill"></div></div>
       </div>`;
-    await delay(700);
-  }
 
-  // Recording
-  wizardEl.innerHTML = `
-    <div class="voice-id-step">
-      <div class="voice-id-progress">Sample ${step} / ${totalSteps}</div>
-      <p>Say: <em>"${escapeHtml(prompt)}"</em></p>
-      <div class="voice-id-recording">🎙️ Recording…</div>
-    </div>`;
+    const meterFill = document.getElementById("vad-meter-fill") as HTMLDivElement | null;
+    const labelEl = document.getElementById("vad-label");
+    let sawAnySignal = false;
+    let switchedToRecording = false;
 
-  if (!_audioCapture) return null;
-  let blob: Blob;
-  try {
-    blob = await _audioCapture.recordSample(SAMPLE_DURATION_SECONDS);
-  } catch (err) {
-    wizardEl.innerHTML = `<div class="voice-id-step voice-id-error">Couldn't record. ${escapeHtml(String(err))}</div>`;
-    return null;
-  }
-
-  // Uploading
-  wizardEl.innerHTML = `
-    <div class="voice-id-step">
-      <div class="voice-id-progress">Sample ${step} / ${totalSteps}</div>
-      <p>Processing…</p>
-    </div>`;
-
-  const form = new FormData();
-  form.append("name", speakerName);
-  form.append("audio", blob, `enroll-${step}.wav`);
-  const token = await ensureAuthToken();
-  try {
-    const res = await fetch("/api/voice/enroll", {
-      method: "POST",
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      body: form,
+    const result = await _audioCapture.recordSampleVAD({
+      onLevel: (rms) => {
+        if (rms > 0.005) sawAnySignal = true;
+        if (meterFill) {
+          const pct = Math.min(100, (rms / 0.3) * 100);
+          meterFill.style.width = `${pct}%`;
+        }
+        if (rms > 0.02 && !switchedToRecording && labelEl) {
+          switchedToRecording = true;
+          labelEl.classList.remove("voice-id-listening");
+          labelEl.classList.add("voice-id-recording");
+          labelEl.textContent = "🎙️ Recording…";
+        }
+      },
     });
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      wizardEl.innerHTML = `<div class="voice-id-step voice-id-error">Upload failed: ${escapeHtml(data.error ?? "unknown error")}</div>`;
+
+    if (result.reason === "no-speech" && !sawAnySignal) {
+      const retry = await showRetry(
+        wizardEl,
+        `<p><strong>I'm not picking up any audio, sir.</strong></p>
+         <p>Check System Settings → Privacy &amp; Security → Microphone, ensure Chrome has permission, and try again.</p>`,
+      );
+      if (!retry) return null;
+      continue;
+    }
+    if (result.reason === "no-speech") {
+      const retry = await showRetry(wizardEl, `<p>I didn't quite hear you, sir.</p>`);
+      if (!retry) return null;
+      continue;
+    }
+    if (result.reason === "too-short" || !result.blob) {
+      const retry = await showRetry(wizardEl, `<p>Just a touch longer, sir.</p>`);
+      if (!retry) return null;
+      continue;
+    }
+
+    // Uploading
+    wizardEl.innerHTML = `
+      <div class="voice-id-step">
+        <div class="voice-id-progress">Sample ${step} / ${totalSteps}</div>
+        <p>Processing…</p>
+      </div>`;
+
+    const form = new FormData();
+    form.append("name", speakerName);
+    form.append("audio", result.blob, `enroll-${step}.wav`);
+    const token = await ensureAuthToken();
+    try {
+      const res = await fetch("/api/voice/enroll", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        wizardEl.innerHTML = `<div class="voice-id-step voice-id-error">Upload failed: ${escapeHtml(data.error ?? "unknown error")}</div>`;
+        return null;
+      }
+      return { enrolled: true, name: speakerName, sample_count: data.sample_count };
+    } catch (err) {
+      wizardEl.innerHTML = `<div class="voice-id-step voice-id-error">Network error: ${escapeHtml(String(err))}</div>`;
       return null;
     }
-    return { enrolled: true, name: speakerName, sample_count: data.sample_count };
-  } catch (err) {
-    wizardEl.innerHTML = `<div class="voice-id-step voice-id-error">Network error: ${escapeHtml(String(err))}</div>`;
-    return null;
   }
+}
+
+/** Render an error message + Retry button, resolve true when clicked. The
+ *  caller can also bail by closing the panel — that path resolves nothing
+ *  and the outer Promise simply hangs until GC, matching prior behavior. */
+function showRetry(wizardEl: HTMLElement, innerHtml: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    wizardEl.innerHTML = `
+      <div class="voice-id-step voice-id-error">
+        ${innerHtml}
+        <button class="settings-btn primary" id="vad-retry">Retry</button>
+      </div>`;
+    const btn = document.getElementById("vad-retry") as HTMLButtonElement | null;
+    if (!btn) {
+      resolve(false);
+      return;
+    }
+    btn.addEventListener("click", () => resolve(true), { once: true });
+  });
 }
 
 async function clearVoiceProfile() {
@@ -549,9 +640,6 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // ---------------------------------------------------------------------------
 // First-time setup wizard

@@ -426,9 +426,21 @@ async def voice_handler(ws: WebSocket):
 
             # ── Speaker verification gate ──
             # Policy lives in voice_id.should_verify_speaker (see its docstring).
-            # Skipped when: not enrolled yet (soft bootstrap), or source="text"
-            # (typed input is gated by the auth token, not the mic).
+            # Skipped when: source="text" (typed input is gated by the auth
+            # token, not the mic). Voice always passes through this gate.
             if voice_id.should_verify_speaker(msg):
+                # Hard reject voice when no profile is enrolled. The frontend
+                # also blocks this on boot (main.ts gateVoiceOnEnrollment),
+                # but we enforce server-side so a stale tab or modified
+                # client can't slip past. Text input is unaffected.
+                if not voice_id.is_enrolled():
+                    log.info(f"Voice rejected — no profile enrolled: {user_text[:60]}")
+                    await speak(
+                        ws,
+                        "Sir, I'll need to register your voice first. "
+                        "Open Settings, then Voice Recognition, to enroll.",
+                    )
+                    continue
                 audio_b64 = msg.get("audio_b64")
                 if isinstance(audio_b64, str) and audio_b64:
                     try:

@@ -321,11 +321,14 @@ class TestShouldVerifySpeaker:
     and "voice input still needs verification post-enrollment."
     """
 
-    def test_skips_when_not_enrolled(self, isolated_voice_id):
+    def test_voice_is_gated_even_when_not_enrolled(self, isolated_voice_id):
+        """Pre-2026-05: this returned False (soft bootstrap), letting unverified
+        voice reach the LLM. Now: voice always trips the gate; the server
+        rejects when no profile is enrolled instead of soft-bootstrapping."""
         from voice_id import should_verify_speaker
 
         msg = {"type": "transcript", "text": "hi", "isFinal": True}
-        assert should_verify_speaker(msg) is False, "soft bootstrap: no profile → no verification"
+        assert should_verify_speaker(msg) is True, "voice path must hit the gate regardless of enrollment"
 
     def test_skips_text_input_even_when_enrolled(self, isolated_voice_id):
         """The bug that shipped in voice-id v1: text input got blocked

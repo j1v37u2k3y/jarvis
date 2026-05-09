@@ -36,6 +36,15 @@
     <div id="jarvis-label">JARVIS</div>
     <div id="error-text"></div>
 
+    <!-- Enrollment gate banner — shown when no speaker is enrolled. -->
+    <div id="enroll-banner" style="display:none">
+      <div class="enroll-banner-text">
+        <strong>Voice registration required, sir.</strong>
+        Open Settings → Voice Recognition to enroll.
+      </div>
+      <button id="btn-enroll-now" class="enroll-banner-btn">Enroll</button>
+    </div>
+
     <!-- Text input bar -->
     <div id="text-input-bar">
       <input id="text-input" type="text" placeholder="Type a message..." autocomplete="off" spellcheck="false" />

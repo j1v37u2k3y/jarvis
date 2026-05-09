@@ -1,11 +1,12 @@
 """
-Voice-ID API — /api/voice/{enroll, status, test}
+Voice-ID API — /api/voice/{enroll, status, test, enroll-prompt}
 
 server.py mounts this via build_voice_router(require_auth). Pattern
 matches api/settings.py — one factory function returning an APIRouter
 with the auth dependency pre-applied.
 """
 
+import base64
 import logging
 from collections.abc import Callable
 
@@ -13,10 +14,16 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 
 import voice_id
+from tts import synthesize_speech
 from voice_id.embedding import compute_embedding
 from voice_id.storage import get_canonical_embedding
 from voice_id.verify import VERIFY_THRESHOLD, _cosine_similarity
 from voice_id.wav import AudioTooShortError
+
+ENROLL_PROMPT_LINE = (
+    "Sir, I'll need to register your voice before I can heed any commands. "
+    "Open Settings, then Voice Recognition, and we'll have it sorted in a moment."
+)
 
 log = logging.getLogger("jarvis.api_voice")
 
@@ -43,6 +50,16 @@ def build_voice_router(require_auth: Callable) -> APIRouter:
     @router.get("/status")
     async def status():
         return voice_id.get_status()
+
+    @router.get("/enroll-prompt")
+    async def enroll_prompt():
+        """TTS of the canned line played when the frontend gates voice input
+        on first boot before enrollment. Returns {audio: base64} or
+        {audio: null, error: ...} on TTS failure."""
+        audio = await synthesize_speech(ENROLL_PROMPT_LINE)
+        if audio:
+            return {"audio": base64.b64encode(audio).decode()}
+        return {"audio": None, "error": "TTS failed"}
 
     @router.post("/test")
     async def test(audio: UploadFile = File(...)):

@@ -9,7 +9,14 @@ import { createOrb, type OrbState } from "./orb";
 import { createVoiceInput, createAudioPlayer } from "./voice";
 import { createAudioCapture } from "./audio-capture";
 import { createSocket } from "./ws";
-import { openSettings, checkFirstTimeSetup, setAudioCapture } from "./settings";
+import {
+  openSettings,
+  checkFirstTimeSetup,
+  setAudioCapture,
+  setEnrollmentStateHandler,
+  isVoiceEnrolled,
+  fetchEnrollPromptAudio,
+} from "./settings";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -19,6 +26,7 @@ import "./style.css";
 type State = "idle" | "listening" | "thinking" | "speaking";
 let currentState: State = "idle";
 let isMuted = false;
+let enrollmentActive = false;
 
 const statusEl = document.getElementById("status-text")!;
 const errorEl = document.getElementById("error-text")!;
@@ -74,6 +82,13 @@ async function ensureAudioCapture() {
 
 function transition(newState: State) {
   if (newState === currentState) return;
+  if (enrollmentActive) {
+    // Freeze the state machine during enrollment — otherwise a delayed
+    // backend response could trigger speaking/thinking and suspend the
+    // mic mid-VAD-capture or pipe TTS over the user's enrollment phrase.
+    console.log(`[state] suppressed transition ${currentState} → ${newState} (enrollment)`);
+    return;
+  }
   console.log(`[state] ${currentState} → ${newState}`);
   currentState = newState;
   orb.setState(newState as OrbState);
@@ -131,11 +146,43 @@ audioPlayer.onFinished(() => {
 });
 
 // ---------------------------------------------------------------------------
+// Enrollment exclusivity — pause the main voice loop while the wizard records
+// ---------------------------------------------------------------------------
+
+setEnrollmentStateHandler((active) => {
+  enrollmentActive = active;
+  console.log(`[enrollment] active=${active}`);
+  if (active) {
+    voiceInput.pause();
+    audioPlayer.stop();
+    return;
+  }
+  // Enrollment finished — re-check status. If the user just enrolled, drop
+  // the banner and kick off the voice loop. Otherwise leave it locked.
+  void isVoiceEnrolled().then((enrolled) => {
+    if (!enrolled) return;
+    hideEnrollBanner();
+    if (voiceLocked) {
+      void startVoiceLoop();
+    } else if (!isMuted) {
+      voiceInput.resume();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // WebSocket messages
 // ---------------------------------------------------------------------------
 
 socket.onMessage((msg) => {
   const type = msg.type as string;
+
+  if (enrollmentActive && (type === "audio" || type === "status")) {
+    // Drop runtime traffic during enrollment — see the enrollment handler
+    // wired below for rationale.
+    console.log(`[ws] dropping ${type} during enrollment`);
+    return;
+  }
 
   if (type === "audio") {
     const audioData = msg.data as string;
@@ -174,13 +221,53 @@ socket.onMessage((msg) => {
 });
 
 // ---------------------------------------------------------------------------
-// Kick off
+// Kick off — voice loop is gated on enrollment status
 // ---------------------------------------------------------------------------
 
-// Start listening after a brief delay for the orb to render
-setTimeout(() => {
+let voiceLocked = true;
+
+const enrollBanner = document.getElementById("enroll-banner")!;
+const enrollNowBtn = document.getElementById("btn-enroll-now");
+enrollNowBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  openSettings();
+});
+
+function showEnrollBanner() {
+  enrollBanner.style.display = "flex";
+}
+
+function hideEnrollBanner() {
+  enrollBanner.style.display = "none";
+}
+
+async function startVoiceLoop() {
+  voiceLocked = false;
   voiceInput.start();
   transition("listening");
+}
+
+async function gateVoiceOnEnrollment(opts: { silent?: boolean } = {}) {
+  const enrolled = await isVoiceEnrolled();
+  if (enrolled) {
+    hideEnrollBanner();
+    await startVoiceLoop();
+    return;
+  }
+  // Not enrolled — leave the voice loop locked and show the banner. When
+  // first-time setup is also pending, it owns the modal — we stay silent
+  // (no TTS prompt, no second openSettings call) to avoid stacking flows.
+  showEnrollBanner();
+  statusEl.textContent = "voice registration required";
+  if (opts.silent) return;
+  const audio = await fetchEnrollPromptAudio();
+  if (audio) audioPlayer.enqueue(audio);
+  setTimeout(() => openSettings(), 600);
+}
+
+setTimeout(async () => {
+  const needsFirstTimeSetup = await checkFirstTimeSetup();
+  await gateVoiceOnEnrollment({ silent: needsFirstTimeSetup });
 }, 1000);
 
 // Resume AudioContext on ANY user interaction (browser autoplay policy)
@@ -286,8 +373,3 @@ btnSettings.addEventListener("click", (e) => {
   menuDropdown.style.display = "none";
   openSettings();
 });
-
-// First-time setup detection — check after a short delay for server readiness
-setTimeout(() => {
-  checkFirstTimeSetup();
-}, 2000);

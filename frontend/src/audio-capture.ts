@@ -35,7 +35,34 @@ export interface AudioCapture {
   snapshot(seconds: number): string | null;
   /** Record `seconds` of fresh audio starting now, return as a WAV Blob. */
   recordSample(seconds: number): Promise<Blob>;
+  /** Voice-activity-detected recording — waits for speech onset, stops on
+   *  trailing silence. Streams live RMS to `onLevel` for UI metering. */
+  recordSampleVAD(opts?: VADOptions): Promise<VADResult>;
   isRunning(): boolean;
+}
+
+export interface VADOptions {
+  /** Audio captured before speech onset, backfilled into the result. */
+  prerollSeconds?: number;
+  /** Stop recording after this much trailing silence. */
+  silenceMs?: number;
+  /** Hard cap on total recording length (preroll + speech + tail silence). */
+  maxSeconds?: number;
+  /** Reject as too-short if voiced samples fall below this. */
+  minSpeechMs?: number;
+  /** Reject as no-speech if onset doesn't happen within this window. */
+  onsetTimeoutMs?: number;
+  /** RMS above this counts as speech. */
+  rmsThreshold?: number;
+  /** Live RMS callback — fires every worklet frame (~125Hz). */
+  onLevel?: (rms: number) => void;
+}
+
+export type VADReason = "ok" | "no-speech" | "too-short";
+
+export interface VADResult {
+  blob: Blob | null;
+  reason: VADReason;
 }
 
 export function createAudioCapture(): AudioCapture {
@@ -60,6 +87,27 @@ export function createAudioCapture(): AudioCapture {
     resolve: (blob: Blob) => void;
   } | null = null;
 
+  // Voice-activity-detected recording state. Lives parallel to activeRecording.
+  let activeVAD: {
+    state: "waiting" | "recording";
+    rmsThreshold: number;
+    silenceMsTarget: number;
+    maxSamples: number;
+    minSpeechSamples: number;
+    prerollSamples: number;
+    onLevel?: (rms: number) => void;
+    // Rolling preroll buffer maintained while waiting for onset.
+    prerollChunks: Float32Array[];
+    prerollLength: number;
+    // Captured audio after onset.
+    chunks: Float32Array[];
+    recordedSamples: number;
+    voicedSamples: number;
+    trailingSilenceSamples: number;
+    onsetTimer: ReturnType<typeof setTimeout> | null;
+    resolve: (result: VADResult) => void;
+  } | null = null;
+
   function handleFrame(frame: Float32Array) {
     // Append to ring
     for (let i = 0; i < frame.length; i++) {
@@ -77,6 +125,65 @@ export function createAudioCapture(): AudioCapture {
         const wav = encodeWav(flat, SAMPLE_RATE);
         activeRecording.resolve(new Blob([wav], { type: "audio/wav" }));
         activeRecording = null;
+      }
+    }
+
+    // Feed VAD recording
+    if (activeVAD) {
+      const rms = frameRms(frame);
+      activeVAD.onLevel?.(rms);
+      const isVoiced = rms > activeVAD.rmsThreshold;
+
+      if (activeVAD.state === "waiting") {
+        // Maintain rolling preroll buffer — drop oldest chunks once over budget.
+        activeVAD.prerollChunks.push(frame);
+        activeVAD.prerollLength += frame.length;
+        while (
+          activeVAD.prerollLength > activeVAD.prerollSamples &&
+          activeVAD.prerollChunks.length > 1
+        ) {
+          const dropped = activeVAD.prerollChunks.shift()!;
+          activeVAD.prerollLength -= dropped.length;
+        }
+
+        if (isVoiced) {
+          // Onset! Promote preroll into the recording chunk list.
+          activeVAD.state = "recording";
+          activeVAD.chunks = activeVAD.prerollChunks.slice();
+          activeVAD.recordedSamples = activeVAD.prerollLength;
+          activeVAD.voicedSamples = frame.length;
+          activeVAD.trailingSilenceSamples = 0;
+          if (activeVAD.onsetTimer) {
+            clearTimeout(activeVAD.onsetTimer);
+            activeVAD.onsetTimer = null;
+          }
+        }
+      } else {
+        // recording
+        activeVAD.chunks.push(frame);
+        activeVAD.recordedSamples += frame.length;
+        if (isVoiced) {
+          activeVAD.voicedSamples += frame.length;
+          activeVAD.trailingSilenceSamples = 0;
+        } else {
+          activeVAD.trailingSilenceSamples += frame.length;
+        }
+
+        const trailingSilenceMs = (activeVAD.trailingSilenceSamples / SAMPLE_RATE) * 1000;
+        const overCap = activeVAD.recordedSamples >= activeVAD.maxSamples;
+        const silenceDone = trailingSilenceMs >= activeVAD.silenceMsTarget;
+
+        if (silenceDone || overCap) {
+          const av = activeVAD;
+          activeVAD = null;
+          if (av.voicedSamples < av.minSpeechSamples) {
+            av.resolve({ blob: null, reason: "too-short" });
+          } else {
+            const flat = concatFloat32(av.chunks, av.recordedSamples);
+            const wav = encodeWav(flat, SAMPLE_RATE);
+            av.resolve({ blob: new Blob([wav], { type: "audio/wav" }), reason: "ok" });
+          }
+        }
       }
     }
   }
@@ -141,6 +248,8 @@ export function createAudioCapture(): AudioCapture {
       writePos = 0;
       filled = 0;
       activeRecording = null;
+      if (activeVAD?.onsetTimer) clearTimeout(activeVAD.onsetTimer);
+      activeVAD = null;
     },
 
     snapshot(seconds: number): string | null {
@@ -174,6 +283,46 @@ export function createAudioCapture(): AudioCapture {
       });
     },
 
+    recordSampleVAD(opts: VADOptions = {}): Promise<VADResult> {
+      if (!audioCtx) return Promise.reject(new Error("audio capture not started"));
+      if (activeRecording || activeVAD) return Promise.reject(new Error("already recording"));
+
+      const prerollSeconds = opts.prerollSeconds ?? 0.3;
+      const silenceMs = opts.silenceMs ?? 800;
+      const maxSeconds = opts.maxSeconds ?? 5.0;
+      const minSpeechMs = opts.minSpeechMs ?? 400;
+      const onsetTimeoutMs = opts.onsetTimeoutMs ?? 4000;
+      const rmsThreshold = opts.rmsThreshold ?? 0.02;
+
+      return new Promise((resolve) => {
+        activeVAD = {
+          state: "waiting",
+          rmsThreshold,
+          silenceMsTarget: silenceMs,
+          maxSamples: Math.floor(maxSeconds * SAMPLE_RATE),
+          minSpeechSamples: Math.floor((minSpeechMs / 1000) * SAMPLE_RATE),
+          prerollSamples: Math.floor(prerollSeconds * SAMPLE_RATE),
+          onLevel: opts.onLevel,
+          prerollChunks: [],
+          prerollLength: 0,
+          chunks: [],
+          recordedSamples: 0,
+          voicedSamples: 0,
+          trailingSilenceSamples: 0,
+          onsetTimer: null,
+          resolve,
+        };
+        // Onset timeout — fires only if we never leave the `waiting` state.
+        activeVAD.onsetTimer = setTimeout(() => {
+          if (activeVAD && activeVAD.state === "waiting") {
+            const av = activeVAD;
+            activeVAD = null;
+            av.resolve({ blob: null, reason: "no-speech" });
+          }
+        }, onsetTimeoutMs);
+      });
+    },
+
     isRunning() {
       return audioCtx !== null;
     },
@@ -183,6 +332,12 @@ export function createAudioCapture(): AudioCapture {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function frameRms(frame: Float32Array): number {
+  let sum = 0;
+  for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
+  return Math.sqrt(sum / frame.length);
+}
 
 function concatFloat32(chunks: Float32Array[], maxLength: number): Float32Array {
   const out = new Float32Array(maxLength);

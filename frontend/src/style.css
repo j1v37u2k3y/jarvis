@@ -528,10 +528,31 @@ html, body {
   line-height: 1;
 }
 
+.voice-id-listening {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 8px;
+}
+
+.voice-id-meter {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.voice-id-meter-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #67e8f9, #0ea5e9);
+  transition: width 60ms linear;
+}
+
 .voice-id-recording {
   font-size: 16px;
   color: #ef4444;
   animation: voice-id-pulse 1s ease-in-out infinite;
+  margin-bottom: 8px;
 }
 
 @keyframes voice-id-pulse {
@@ -546,4 +567,53 @@ html, body {
 
 .voice-id-error {
   color: #ef4444;
+}
+
+/* Enrollment gate banner — shown on boot when no speaker is enrolled. */
+#enroll-banner {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+  background: rgba(14, 165, 233, 0.12);
+  border: 1px solid rgba(14, 165, 233, 0.4);
+  border-radius: 12px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  z-index: 100;
+  max-width: 560px;
+}
+
+#enroll-banner .enroll-banner-text {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#enroll-banner .enroll-banner-text strong {
+  display: block;
+  color: #67e8f9;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+#enroll-banner .enroll-banner-btn {
+  background: #0ea5e9;
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+#enroll-banner .enroll-banner-btn:hover {
+  background: #0284c7;
 }
