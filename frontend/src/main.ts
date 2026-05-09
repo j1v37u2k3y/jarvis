@@ -16,6 +16,7 @@ import {
   setEnrollmentStateHandler,
   isVoiceEnrolled,
   fetchEnrollPromptAudio,
+  fetchEnrollCompleteAudio,
 } from "./settings";
 import "./style.css";
 
@@ -125,10 +126,12 @@ const voiceInput = createVoiceInput(
   (text: string) => {
     // Cancel any current JARVIS response before sending new input
     audioPlayer.stop();
-    // Snapshot the last 2s of mic audio so the backend can verify the
-    // speaker. null if audio-capture hasn't started yet (first utterance
-    // before user interaction) — server treats missing audio as soft mode.
-    const audioB64 = audioCapture.snapshot(2);
+    // Snapshot the last 4s of mic audio so the backend can verify the
+    // speaker. 4s (not 2s) because Web Speech API's onresult fires ~1.5s
+    // after speech ends — a 2s window is mostly trailing silence and
+    // resemblyzer's silence-trim leaves too little voice for a stable
+    // embedding. null if audio-capture hasn't started yet.
+    const audioB64 = audioCapture.snapshot(4);
     socket.send({ type: "transcript", text, isFinal: true, audio_b64: audioB64 });
     transition("thinking");
   },
@@ -141,8 +144,18 @@ const voiceInput = createVoiceInput(
 // Audio playback finished
 // ---------------------------------------------------------------------------
 
+// One-shot continuation fired after audioPlayer drains. Used by the
+// enrollment flow to start the voice loop AFTER the "thank you" TTS
+// finishes, so the orb's speaking state visibly precedes listening.
+let pendingAfterPlay: (() => void) | null = null;
+
 audioPlayer.onFinished(() => {
   transition("idle");
+  if (pendingAfterPlay) {
+    const cb = pendingAfterPlay;
+    pendingAfterPlay = null;
+    cb();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -153,17 +166,30 @@ setEnrollmentStateHandler((active) => {
   enrollmentActive = active;
   console.log(`[enrollment] active=${active}`);
   if (active) {
-    voiceInput.pause();
+    // Only pause the runtime voice loop if it was actually running. On
+    // first-time enrollment voiceLocked is still true and recognition has
+    // never been .start()ed — calling .stop() before .start() leaves
+    // Chrome's SpeechRecognition state machine wedged so the post-enrollment
+    // start silently no-ops.
+    if (!voiceLocked) voiceInput.pause();
     audioPlayer.stop();
     return;
   }
   // Enrollment finished — re-check status. If the user just enrolled, drop
-  // the banner and kick off the voice loop. Otherwise leave it locked.
-  void isVoiceEnrolled().then((enrolled) => {
+  // the banner, play the "thank you" TTS, then kick off the voice loop.
+  // Otherwise leave it locked.
+  void isVoiceEnrolled().then(async (enrolled) => {
     if (!enrolled) return;
     hideEnrollBanner();
     if (voiceLocked) {
-      void startVoiceLoop();
+      const audio = await fetchEnrollCompleteAudio();
+      if (audio) {
+        pendingAfterPlay = () => void startVoiceLoop();
+        transition("speaking");
+        audioPlayer.enqueue(audio);
+      } else {
+        void startVoiceLoop();
+      }
     } else if (!isMuted) {
       voiceInput.resume();
     }

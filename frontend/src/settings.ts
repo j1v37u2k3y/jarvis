@@ -88,6 +88,17 @@ export async function fetchEnrollPromptAudio(): Promise<string | null> {
   }
 }
 
+/** Fetch the canned "thank you, voice registered" TTS line as base64.
+ *  null on failure — caller should fall through to start the loop silently. */
+export async function fetchEnrollCompleteAudio(): Promise<string | null> {
+  try {
+    const res = await apiGet<{ audio: string | null }>("/api/voice/enroll-complete-prompt");
+    return res.audio ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------

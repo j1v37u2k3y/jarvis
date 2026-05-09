@@ -15,11 +15,13 @@ from .storage import get_canonical_embedding
 
 log = logging.getLogger("jarvis.voice_id.verify")
 
-# Cosine similarity threshold. Resemblyzer embeddings are unit-norm, so
-# cosine similarity between same-speaker utterances typically lands in
-# 0.75–0.95 range; cross-speaker is 0.0–0.5. 0.75 is a sensible default
-# that can be tuned once we have real enrollment data.
-VERIFY_THRESHOLD = 0.75
+# Cosine similarity threshold. Resemblyzer's textbook same-speaker range is
+# 0.75–0.95, but real-world Chrome-captured runtime clips land at 0.65–0.75
+# — shorter, AGC-touched audio embeds further from the canonical mean than
+# the cleanly-VAD-cropped enrollment samples do. Cross-speaker stays at
+# 0.0–0.5, so 0.65 keeps a comfortable gap. Re-tune if you start seeing
+# false-accepts on a different voice.
+VERIFY_THRESHOLD = 0.65
 
 # How long a positive verification stays cached for a given WebSocket
 # connection. 30s is short enough that a stranger picking up mid-session

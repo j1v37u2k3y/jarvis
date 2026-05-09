@@ -25,6 +25,8 @@ ENROLL_PROMPT_LINE = (
     "Open Settings, then Voice Recognition, and we'll have it sorted in a moment."
 )
 
+ENROLL_COMPLETE_LINE = "Excellent, sir. Your voice is on file. I am at your service."
+
 log = logging.getLogger("jarvis.api_voice")
 
 
@@ -57,6 +59,15 @@ def build_voice_router(require_auth: Callable) -> APIRouter:
         on first boot before enrollment. Returns {audio: base64} or
         {audio: null, error: ...} on TTS failure."""
         audio = await synthesize_speech(ENROLL_PROMPT_LINE)
+        if audio:
+            return {"audio": base64.b64encode(audio).decode()}
+        return {"audio": None, "error": "TTS failed"}
+
+    @router.get("/enroll-complete-prompt")
+    async def enroll_complete_prompt():
+        """TTS of the canned 'thank you' line played after enrollment
+        completes successfully and before the runtime voice loop starts."""
+        audio = await synthesize_speech(ENROLL_COMPLETE_LINE)
         if audio:
             return {"audio": base64.b64encode(audio).decode()}
         return {"audio": None, "error": "TTS failed"}

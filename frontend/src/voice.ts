@@ -86,7 +86,9 @@ export function createVoiceInput(
     },
     pause() {
       paused = true;
-      recognition.stop();
+      // No-op if we never started — calling recognition.stop() before
+      // recognition.start() can wedge Chrome's SpeechRecognition state.
+      if (shouldListen) recognition.stop();
     },
     resume() {
       paused = false;

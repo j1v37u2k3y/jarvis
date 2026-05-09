@@ -19,9 +19,10 @@ import pcmProcessorUrl from "./pcm-processor.js?url";
 // the main thread.
 const SAMPLE_RATE = 16_000;
 
-// Ring buffer holds ~3s of audio at 16kHz. Each final transcript
-// grabs the last ~2s from it.
-const RING_BUFFER_SECONDS = 3;
+// Ring buffer holds ~5s of audio at 16kHz. Web Speech API's onresult
+// fires ~1-2s after the user stops speaking (endpoint detection), so a
+// 4s snapshot at that moment still captures the utterance with margin.
+const RING_BUFFER_SECONDS = 5;
 const RING_BUFFER_SAMPLES = SAMPLE_RATE * RING_BUFFER_SECONDS;
 
 export interface AudioCapture {
