@@ -25,6 +25,20 @@ log = logging.getLogger("jarvis.voice_id.storage")
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "voice_profiles.db"
 
+# Cache of the canonical (mean) embedding, keyed by profile name (None = "the
+# only profile"). Computing it means reading every sample BLOB and averaging —
+# safe to cache because it changes ONLY on (re-)enrollment, and every writer
+# below calls invalidate_canonical(). This is the *right* thing to cache: the
+# enrolled identity is immutable between enrollments. (The incoming utterance,
+# by contrast, must be re-embedded every time — see verify.verify_speaker.)
+_canonical_cache: dict[str | None, "tuple[int, np.ndarray] | None"] = {}
+
+
+def invalidate_canonical() -> None:
+    """Drop the cached canonical embedding(s). Called after any write to the
+    profiles/samples tables so the next verify recomputes from fresh data."""
+    _canonical_cache.clear()
+
 
 class StatusDict(TypedDict):
     enrolled: bool
@@ -92,14 +106,32 @@ def enroll_sample(audio_bytes: bytes, name: str) -> int:
         conn.commit()
         count = conn.execute("SELECT COUNT(*) AS n FROM samples WHERE profile_id = ?", (profile_id,)).fetchone()["n"]
         log.info(f"Enrolled sample for {name!r} (total: {count})")
+        invalidate_canonical()  # samples table changed — drop the cached mean
         return count
     finally:
         conn.close()
 
 
 def get_canonical_embedding(name: str | None = None) -> tuple[int, np.ndarray] | None:
-    """Return (profile_id, mean_embedding) for the named profile, or the
-    only profile if `name` is None. Returns None if no profile exists.
+    """Return (profile_id, mean_embedding) for the named profile, or the only
+    profile if `name` is None. Returns None if no profile exists.
+
+    Read-through cache: the canonical embedding only changes on (re-)enrollment,
+    so we compute it once and reuse it across every runtime verification. This
+    is the hot-path win that replaces the old per-connection trust cache —
+    cheap to recompute when it matters, free when it doesn't.
+    """
+    if name in _canonical_cache:
+        return _canonical_cache[name]
+    result = _compute_canonical_embedding(name)
+    _canonical_cache[name] = result
+    return result
+
+
+def _compute_canonical_embedding(name: str | None = None) -> tuple[int, np.ndarray] | None:
+    """Read all sample BLOBs for the profile and return (profile_id,
+    unit-normalized mean embedding). Returns None if no profile/samples exist.
+    Uncached — callers should go through get_canonical_embedding().
     """
     init_db()
     conn = _get_db()
@@ -174,6 +206,7 @@ def clear_profile(name: str | None = None) -> None:
         else:
             conn.execute("DELETE FROM profiles WHERE name = ?", (name,))
         conn.commit()
+        invalidate_canonical()  # profile gone — drop the cached mean
         log.info(f"Cleared profile: {name or '(all)'}")
     finally:
         conn.close()
