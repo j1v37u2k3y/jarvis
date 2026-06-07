@@ -51,7 +51,6 @@ ignore = [
 # FastAPI's idiomatic dependency pattern (File(...), Form(...)) trips B008
 "api/voice.py" = ["B008"]
 # Standalone test scripts with their own .env loading
-"tests/test_classifier.py" = ["E402"]
 "tests/test_browser_integration.py" = ["S306"]
 
 # ---------------------------------------------------------------------------
@@ -60,7 +59,7 @@ ignore = [
 [tool.mypy]
 python_version = "3.12"
 warn_unused_configs = true
-exclude = ["venv", "frontend", "data", "tests/test_classifier.py"]
+exclude = ["venv", "frontend", "data"]
 
 # Third-party libs without stubs — list explicitly so new missing imports get caught
 [[tool.mypy.overrides]]
