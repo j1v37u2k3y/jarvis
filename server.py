@@ -15,7 +15,6 @@ import logging
 import os
 import secrets
 import time
-import uuid
 from pathlib import Path
 
 # Load .env file if present
@@ -363,10 +362,6 @@ async def voice_handler(ws: WebSocket):
     # Audio collision prevention — track when user last spoke
     voice_state = {"last_user_time": 0.0}
 
-    # Unique ID for this WS connection — keys the voice_id verification cache
-    # so reconnects don't inherit a stale "verified" status.
-    ws_id = uuid.uuid4().hex
-
     # Self-awareness — track last spoken response to avoid repetition
     last_jarvis_response = ""
 
@@ -444,7 +439,7 @@ async def voice_handler(ws: WebSocket):
                 audio_b64 = msg.get("audio_b64")
                 if isinstance(audio_b64, str) and audio_b64:
                     try:
-                        result = voice_id.verify_cached_or_new(ws_id, base64.b64decode(audio_b64))
+                        result = voice_id.verify_speaker(base64.b64decode(audio_b64))
                     except Exception as e:
                         log.warning(f"Speaker verify raised {e!r} — dropping command for safety")
                         await speak(ws, "I had trouble with that audio, sir. Try again.")
@@ -593,7 +588,6 @@ async def voice_handler(ws: WebSocket):
         log.error(f"WebSocket error: {e}", exc_info=True)
     finally:
         task_manager.unregister_websocket(ws)
-        voice_id.clear_cache(ws_id)
 
 
 # ---------------------------------------------------------------------------

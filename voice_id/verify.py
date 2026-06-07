@@ -1,11 +1,17 @@
 """
 Speaker verification — compare an incoming utterance against the enrolled
-canonical embedding. In-memory 30s cache per ws_id so we don't pay the
-embedding cost on every transcript from the same connection.
+canonical embedding.
+
+EVERY utterance is verified. There is deliberately NO "this connection is
+trusted for N seconds" cache: that window let anyone in mic range speak
+commands right after the owner, with no re-check and no log line. The only
+thing cached is the canonical (enrolled) embedding, which lives in storage.py
+and is safe to cache because it changes only on re-enrollment. The incoming
+voice is re-embedded every time — ~20ms on CPU, negligible next to the LLM
+call that follows a recognized command.
 """
 
 import logging
-import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -20,13 +26,9 @@ log = logging.getLogger("jarvis.voice_id.verify")
 # — shorter, AGC-touched audio embeds further from the canonical mean than
 # the cleanly-VAD-cropped enrollment samples do. Cross-speaker stays at
 # 0.0–0.5, so 0.65 keeps a comfortable gap. Re-tune if you start seeing
-# false-accepts on a different voice.
+# false-accepts on a different voice — every decision now logs its similarity
+# at INFO (see verify_speaker), so the runtime distribution is observable.
 VERIFY_THRESHOLD = 0.65
-
-# How long a positive verification stays cached for a given WebSocket
-# connection. 30s is short enough that a stranger picking up mid-session
-# is still caught; long enough to avoid per-utterance cost for the owner.
-CACHE_TTL_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,10 +36,6 @@ class VerifyResult:
     recognized: bool
     similarity: float
     profile_id: int | None
-    from_cache: bool
-
-
-_cache: dict[str, tuple[float, int]] = {}  # ws_id -> (verified_at, profile_id)
 
 
 def should_verify_speaker(msg: dict) -> bool:
@@ -62,57 +60,32 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
-def verify_cached_or_new(ws_id: str, audio_bytes: bytes) -> VerifyResult:
-    """Verify a speaker against the enrolled canonical embedding.
+def verify_speaker(audio_bytes: bytes) -> VerifyResult:
+    """Verify a single utterance against the enrolled canonical embedding.
 
-    Fast path: if ws_id has a cache entry <30s old, return it immediately.
-    Slow path: compute embedding, compare, cache if positive.
+    Always re-embeds the incoming audio and compares — no trust-by-connection
+    shortcut. The canonical embedding is cached in storage.py, so the only
+    per-call cost is the ~20ms incoming embedding.
+
+    Every decision logs its similarity at INFO so the runtime score
+    distribution (and any false-accepts) is observable in the server log.
     """
-    now = time.time()
-    cached = _cache.get(ws_id)
-    if cached is not None:
-        verified_at, profile_id = cached
-        if now - verified_at < CACHE_TTL_SECONDS:
-            return VerifyResult(
-                recognized=True,
-                similarity=1.0,  # unknown at cache-hit time; we already said yes
-                profile_id=profile_id,
-                from_cache=True,
-            )
-        # Stale — fall through to re-verify
-        _cache.pop(ws_id, None)
-
     canonical = get_canonical_embedding()
     if canonical is None:
         # No profile enrolled — caller should gate on is_enrolled() first,
         # but this is a defensive fallback.
-        return VerifyResult(recognized=False, similarity=0.0, profile_id=None, from_cache=False)
+        return VerifyResult(recognized=False, similarity=0.0, profile_id=None)
 
     profile_id, canonical_emb = canonical
     incoming_emb = compute_embedding(audio_bytes)
     similarity = _cosine_similarity(canonical_emb, incoming_emb)
     recognized = similarity >= VERIFY_THRESHOLD
 
-    if recognized:
-        _cache[ws_id] = (now, profile_id)
-        log.debug(f"Verified ws={ws_id} similarity={similarity:.3f}")
-    else:
-        log.info(f"Rejected ws={ws_id} similarity={similarity:.3f} (threshold={VERIFY_THRESHOLD})")
+    verdict = "ACCEPT" if recognized else "REJECT"
+    log.info(f"Voice {verdict} similarity={similarity:.3f} (threshold={VERIFY_THRESHOLD})")
 
     return VerifyResult(
         recognized=recognized,
         similarity=similarity,
         profile_id=profile_id if recognized else None,
-        from_cache=False,
     )
-
-
-def clear_cache(ws_id: str | None = None) -> None:
-    """Drop cached verification for one ws_id, or all if None.
-
-    Called when a WebSocket disconnects or when a profile is re-enrolled.
-    """
-    if ws_id is None:
-        _cache.clear()
-    else:
-        _cache.pop(ws_id, None)

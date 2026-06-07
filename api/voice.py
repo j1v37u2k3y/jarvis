@@ -45,8 +45,7 @@ def build_voice_router(require_auth: Callable) -> APIRouter:
 
     @router.delete("/enroll")
     async def clear():
-        voice_id.clear_profile()
-        voice_id.clear_cache()
+        voice_id.clear_profile()  # invalidates the canonical cache internally
         return {"success": True}
 
     @router.get("/status")

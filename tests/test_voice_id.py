@@ -7,32 +7,32 @@ manually via the enrollment UI after PR #2.
 """
 
 import io
-import time
 
 import numpy as np
 import pytest
 import soundfile as sf
 
 # ---------------------------------------------------------------------------
-# Isolate each test: point DB_PATH at a tmp file, reset in-memory cache
+# Isolate each test: point DB_PATH at a tmp file, reset caches
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def isolated_voice_id(tmp_path, monkeypatch):
-    """Redirect voice_id.storage.DB_PATH to a per-test tmp file, clear caches,
-    and reset server._AUTH_TOKEN (other tests leave it set).
+    """Redirect voice_id.storage.DB_PATH to a per-test tmp file, clear the
+    canonical-embedding cache, and reset server._AUTH_TOKEN (other tests
+    leave it set).
     """
     import server
-    from voice_id import storage, verify
+    from voice_id import storage
 
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "voice_profiles.db")
     monkeypatch.setattr(server, "_AUTH_TOKEN", "")
-    verify._cache.clear()
+    storage.invalidate_canonical()
     # Force the resemblyzer encoder to persist across tests for speed — it
     # takes ~0.5s to load. Don't reset embedding._encoder.
     yield
-    verify._cache.clear()
+    storage.invalidate_canonical()
 
 
 # ---------------------------------------------------------------------------
@@ -106,81 +106,98 @@ class TestEnrollment:
 
 class TestVerification:
     def test_same_speaker_passes(self, isolated_voice_id):
-        from voice_id import enroll_sample, verify_cached_or_new
+        from voice_id import enroll_sample, verify_speaker
         from voice_id.verify import VERIFY_THRESHOLD
 
         enroll_sample(_synth_wav("speaker_a", 1), "tom")
         enroll_sample(_synth_wav("speaker_a", 2), "tom")
 
-        result = verify_cached_or_new("ws-test-1", _synth_wav("speaker_a", 99))
+        result = verify_speaker(_synth_wav("speaker_a", 99))
         assert result.recognized, f"same speaker rejected (sim={result.similarity:.3f}, threshold={VERIFY_THRESHOLD})"
         assert result.similarity > VERIFY_THRESHOLD
         assert result.profile_id is not None
-        assert not result.from_cache
 
     def test_different_speaker_rejected(self, isolated_voice_id):
-        from voice_id import enroll_sample, verify_cached_or_new
+        from voice_id import enroll_sample, verify_speaker
         from voice_id.verify import VERIFY_THRESHOLD
 
         enroll_sample(_synth_wav("speaker_a", 1), "tom")
         enroll_sample(_synth_wav("speaker_a", 2), "tom")
 
-        result = verify_cached_or_new("ws-test-2", _synth_wav("speaker_b", 99))
+        result = verify_speaker(_synth_wav("speaker_b", 99))
         assert not result.recognized, f"different speaker passed (sim={result.similarity:.3f})"
         assert result.similarity < VERIFY_THRESHOLD
         assert result.profile_id is None
 
     def test_no_profile_returns_false_without_error(self, isolated_voice_id):
-        from voice_id import verify_cached_or_new
+        from voice_id import verify_speaker
 
-        result = verify_cached_or_new("ws-test-3", _synth_wav("speaker_a", 1))
+        result = verify_speaker(_synth_wav("speaker_a", 1))
         assert not result.recognized
         assert result.similarity == 0.0
         assert result.profile_id is None
 
-    def test_cache_hit_within_ttl(self, isolated_voice_id):
-        from voice_id import enroll_sample, verify_cached_or_new
+    def test_every_utterance_is_reverified(self, isolated_voice_id):
+        """THE security regression test. Before this fix, a positive verify
+        cached "trusted" for 30s per connection, so an impostor speaking right
+        after the owner sailed through. Now every utterance is scored on its
+        own merits — the owner passing does NOT grant a trust window to the
+        next voice.
+        """
+        from voice_id import enroll_sample, verify_speaker
 
         enroll_sample(_synth_wav("speaker_a", 1), "tom")
-        first = verify_cached_or_new("ws-cache", _synth_wav("speaker_a", 2))
-        assert first.recognized and not first.from_cache
+        enroll_sample(_synth_wav("speaker_a", 2), "tom")
 
-        # Second call from the same ws_id — even with audio that'd normally
-        # miss, the cache hit short-circuits the check.
-        second = verify_cached_or_new("ws-cache", _synth_wav("speaker_b", 99))
-        assert second.from_cache
-        assert second.recognized
+        owner = verify_speaker(_synth_wav("speaker_a", 99))
+        assert owner.recognized, f"owner rejected (sim={owner.similarity:.3f})"
 
-    def test_cache_expires_after_ttl(self, isolated_voice_id, monkeypatch):
-        from voice_id import enroll_sample, verify_cached_or_new
-        from voice_id import verify as verify_mod
+        # Impostor immediately after the owner — must be judged fresh, not
+        # waved through on the owner's coattails.
+        impostor = verify_speaker(_synth_wav("speaker_b", 99))
+        assert not impostor.recognized, (
+            f"impostor passed right after owner (sim={impostor.similarity:.3f}) — the 30s trust window is back"
+        )
+        assert impostor.profile_id is None
 
-        enroll_sample(_synth_wav("speaker_a", 1), "tom")
-        verify_cached_or_new("ws-expire", _synth_wav("speaker_a", 2))
-        assert "ws-expire" in verify_mod._cache
 
-        # Fast-forward time past the TTL by monkey-patching time.time
-        real_now = time.time()
-        monkeypatch.setattr(verify_mod.time, "time", lambda: real_now + verify_mod.CACHE_TTL_SECONDS + 1)
+# ---------------------------------------------------------------------------
+# Canonical-embedding cache (the only thing we cache, and only because it
+# changes solely on re-enrollment)
+# ---------------------------------------------------------------------------
 
-        # Next call with an impostor — should NOT short-circuit
-        result = verify_cached_or_new("ws-expire", _synth_wav("speaker_b", 99))
-        assert not result.from_cache
-        assert not result.recognized
 
-    def test_clear_cache_one_ws(self, isolated_voice_id):
-        from voice_id import clear_cache, enroll_sample, verify_cached_or_new
-        from voice_id import verify as verify_mod
+class TestCanonicalCache:
+    def test_canonical_is_cached_after_first_read(self, isolated_voice_id):
+        from voice_id import enroll_sample, storage, verify_speaker
 
         enroll_sample(_synth_wav("speaker_a", 1), "tom")
-        verify_cached_or_new("ws-a", _synth_wav("speaker_a", 2))
-        verify_cached_or_new("ws-b", _synth_wav("speaker_a", 3))
-        assert "ws-a" in verify_mod._cache
-        assert "ws-b" in verify_mod._cache
+        assert storage._canonical_cache == {}, "enroll must leave the cache empty (invalidated)"
 
-        clear_cache("ws-a")
-        assert "ws-a" not in verify_mod._cache
-        assert "ws-b" in verify_mod._cache
+        verify_speaker(_synth_wav("speaker_a", 2))
+        assert None in storage._canonical_cache, "verify should populate the canonical cache"
+
+    def test_enroll_invalidates_canonical_cache(self, isolated_voice_id):
+        from voice_id import enroll_sample, storage, verify_speaker
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+        verify_speaker(_synth_wav("speaker_a", 2))
+        assert None in storage._canonical_cache
+
+        # Adding a sample changes the canonical mean — cache must drop so the
+        # next verify recomputes against the new profile.
+        enroll_sample(_synth_wav("speaker_a", 3), "tom")
+        assert storage._canonical_cache == {}, "adding a sample must invalidate the canonical cache"
+
+    def test_clear_profile_invalidates_canonical_cache(self, isolated_voice_id):
+        from voice_id import clear_profile, enroll_sample, storage, verify_speaker
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+        verify_speaker(_synth_wav("speaker_a", 2))
+        assert None in storage._canonical_cache
+
+        clear_profile()
+        assert storage._canonical_cache == {}, "clearing the profile must invalidate the canonical cache"
 
 
 # ---------------------------------------------------------------------------
@@ -198,18 +215,6 @@ class TestClearProfile:
         clear_profile()
         assert not is_enrolled()
         assert get_status() == {"enrolled": False, "name": None, "sample_count": 0}
-
-    def test_clear_also_drops_verification_cache(self, isolated_voice_id):
-        from voice_id import clear_cache, clear_profile, enroll_sample, verify_cached_or_new
-        from voice_id import verify as verify_mod
-
-        enroll_sample(_synth_wav("speaker_a", 1), "tom")
-        verify_cached_or_new("ws-xyz", _synth_wav("speaker_a", 2))
-        assert "ws-xyz" in verify_mod._cache
-
-        clear_profile()
-        clear_cache()  # API layer will call this after DELETE /enroll
-        assert "ws-xyz" not in verify_mod._cache
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +274,7 @@ class TestRESTEndpoints:
         from fastapi.testclient import TestClient
 
         import server
+        from voice_id.verify import VERIFY_THRESHOLD
 
         client = TestClient(server.app)
         client.post(
@@ -287,7 +293,9 @@ class TestRESTEndpoints:
         body = r.json()
         assert "similarity" in body
         assert body["recognized"] is False
-        assert body["threshold"] == 0.75
+        # Pinned to the live constant so it can't silently drift like the
+        # hardcoded 0.75 did when the threshold dropped to 0.65.
+        assert body["threshold"] == VERIFY_THRESHOLD
 
     def test_clear_endpoint_resets(self, isolated_voice_id):
         from fastapi.testclient import TestClient
