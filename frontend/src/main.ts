@@ -98,11 +98,11 @@ function transition(newState: State) {
   switch (newState) {
     case "idle":
       if (!isMuted) voiceInput.resume();
-      audioCapture.resume();
+      if (!isMuted) audioCapture.resume();
       break;
     case "listening":
       if (!isMuted) voiceInput.resume();
-      audioCapture.resume();
+      if (!isMuted) audioCapture.resume();
       break;
     case "thinking":
       voiceInput.pause();
@@ -349,10 +349,18 @@ btnMute.addEventListener("click", (e) => {
   isMuted = !isMuted;
   btnMute.classList.toggle("muted", isMuted);
   if (isMuted) {
+    // Mute means the mic light goes OFF. Release BOTH mic consumers: Web
+    // Speech's hidden stream (pause) and our voice-ID capture stream. We
+    // stop() — not suspend() — capture so the OS mic indicator actually
+    // goes dark; suspend() leaves the MediaStream track live and the light on.
     voiceInput.pause();
+    audioCapture.stop();
     transition("idle");
   } else {
     voiceInput.resume();
+    // Re-acquire the capture stream from scratch — stop() released the
+    // device, so resume() (AudioContext-only) wouldn't bring it back.
+    void ensureAudioCapture();
     transition("listening");
   }
 });
