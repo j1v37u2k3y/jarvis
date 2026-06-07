@@ -62,3 +62,19 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+      # Full test suite. ~10s, so scoped to pre-push (not every commit) —
+      # commits stay fast, but no red test leaves the machine for CI to
+      # catch. This MIRRORS the `ci` script's pytest invocation exactly
+      # (same --ignore + marker deselection): test_browser_integration.py
+      # needs Playwright, and the requires_* markers need live services.
+      # If you change the `ci` script's pytest line, change this one too.
+      - id: pytest
+        name: pytest (full suite, CI-equivalent)
+        entry: >
+          venv/bin/python -m pytest tests/
+          --ignore=tests/test_browser_integration.py
+          -m "not requires_mc and not requires_api and not requires_network"
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

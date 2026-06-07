@@ -60,7 +60,6 @@ run_typecheck() {
 run_test() {
     info "Tests (pytest)"
     if python -m pytest tests/ -v \
-        --ignore=tests/test_classifier.py \
         --ignore=tests/test_browser_integration.py \
         -m "not requires_mc and not requires_api and not requires_network" 2>&1; then
         pass "pytest"
