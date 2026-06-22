@@ -27,29 +27,15 @@ repos:
         types: [python]
         pass_filenames: false
 
-      # Dependency CVE scan. Slow (hits PyPI advisory DB), so scoped to
-      # pre-push rather than every commit. Catches dep vulns before they
-      # leave the machine.
-      #
-      # Ignored CVEs (documented accepted risk):
-      #   torch 2.2.2 (macOS x86_64 only — newer wheels don't exist):
-      #     CVE-2025-2953, CVE-2025-3730, PYSEC-2025-41, PYSEC-2024-259
-      #   All four are torch.load / model-loading bugs. JARVIS never
-      #   calls torch.load on user input — resemblyzer ships a baked-in
-      #   model. Linux CI + Linux deploys use torch>=2.7.1 which has
-      #   these fixed; the ignore only matters on dev workstations.
-      - id: pip-audit
-        name: pip-audit
-        entry: >
-          venv/bin/pip-audit -r requirements.txt
-          --ignore-vuln CVE-2025-2953
-          --ignore-vuln CVE-2025-3730
-          --ignore-vuln PYSEC-2025-41
-          --ignore-vuln PYSEC-2024-259
-        language: system
-        files: ^requirements(-dev)?\.txt$
-        pass_filenames: false
-        stages: [pre-push]
+      # NOTE: dependency CVE scanning (pip-audit) intentionally does NOT run
+      # here. It lives in CI (.github/workflows/ci.yml -> ./ci security) and
+      # Dependabot (alerts + automated security-fix PRs, enabled in repo
+      # settings), both on Linux — the platform that actually ships. The old
+      # local pre-push pip-audit hook only ever flagged torch 2.2.2 CVEs that
+      # are macOS x86_64-only and unfixable (no newer Intel-Mac wheel), so it
+      # forced a growing ignore-list of vulns that don't exist in production.
+      # Dropped it rather than curate exclusions. CI + Dependabot are the
+      # authoritative dependency scanners.
 
       # Code-level security scan. Fast — runs every commit. ALL severities
       # surface; the policy-level skips (subprocess noise, resilient

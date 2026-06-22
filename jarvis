@@ -39,9 +39,11 @@ else
     DAEMON_PID=""
 fi
 
-# Start JARVIS backend
+# Start JARVIS backend. Tee stdout/stderr to a logfile so speaker-ID decisions
+# (voice_id logs "Voice ACCEPT/REJECT similarity=..." at INFO) survive past the
+# terminal scrollback — needed to tune VERIFY_THRESHOLD from real runtime scores.
 source "$DIR/venv/bin/activate"
-python "$DIR/server.py" &
+python "$DIR/server.py" > /tmp/jarvis-backend.log 2>&1 &
 BACKEND_PID=$!
 
 # Start JARVIS frontend
@@ -75,6 +77,7 @@ echo ""
 echo "  JARVIS is running. Press Ctrl+C to stop."
 echo "  - JARVIS:          http://localhost:5173"
 echo "  - Mission Control: http://localhost:3000"
+echo "  - Backend log:     /tmp/jarvis-backend.log  (voice-ID scores)"
 echo "  - Daemon log:      /tmp/mc-daemon.log"
 echo ""
 

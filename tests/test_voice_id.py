@@ -162,6 +162,74 @@ class TestVerification:
 
 
 # ---------------------------------------------------------------------------
+# Preprocessing robustness — the family-false-accept fix
+# ---------------------------------------------------------------------------
+
+
+class TestPreprocessingRobustness:
+    """compute_embedding routes audio through resemblyzer.preprocess_wav, which
+    volume-normalizes and VAD-trims silence. This is the fix for the bug where
+    family members cleared the gate: runtime snapshot(N) clips include trailing
+    silence (Web Speech finalizes ~1-2s after the speaker stops), and feeding
+    that raw to embed_utterance diluted the owner's embedding toward a generic
+    centroid — collapsing the gap that separates the owner from impostors.
+    """
+
+    @staticmethod
+    def _synth_a_with_silence(seed: int, silence_seconds: float) -> bytes:
+        """speaker_a from _synth_wav with trailing silence appended — mimics a
+        runtime snapshot that caught speech plus the trailing endpoint gap.
+        Reuses speaker_a's exact signal so the only difference is the silence."""
+        rng = np.random.default_rng(seed)
+        t = np.linspace(0, 2, 32000, dtype=np.float32)
+        x = 0.3 * rng.standard_normal(32000).astype(np.float32)
+        x += 0.2 * np.sin(2 * np.pi * 200 * t)
+        x = np.concatenate([x, np.zeros(int(silence_seconds * 16000), dtype=np.float32)])
+        buf = io.BytesIO()
+        sf.write(buf, x.astype(np.float32), 16000, format="WAV")
+        return buf.getvalue()
+
+    def test_trailing_silence_does_not_corrupt_embedding(self, isolated_voice_id):
+        """Same utterance, with vs without 2s of trailing silence, must embed to
+        nearly the same vector. Under the old raw-embed path this drifted ~0.10
+        — enough to drop the owner into impostor range; preprocess_wav trims the
+        silence so it stays ~0.998. Guards against reverting embedding.py to a
+        bare embed_utterance call.
+        """
+        from voice_id.embedding import compute_embedding
+
+        clean = _synth_wav("speaker_a", 1)
+        padded = self._synth_a_with_silence(1, silence_seconds=2.0)
+
+        a = compute_embedding(clean)
+        b = compute_embedding(padded)
+        sim = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+        assert sim >= 0.97, (
+            f"trailing silence shifted the embedding (sim={sim:.3f}) — "
+            "compute_embedding must apply preprocess_wav to VAD-trim silence"
+        )
+
+    def test_silence_only_clip_is_rejected_not_crashed(self, isolated_voice_id):
+        """A snapshot with no real speech trims to ~nothing. compute_embedding
+        must raise AudioTooShortError (the voice handler catches it and drops the
+        command → fail-closed) rather than embedding silence as a valid speaker.
+        """
+        from voice_id.embedding import compute_embedding
+        from voice_id.wav import AudioTooShortError
+
+        # 3s of near-silence (tiny dither so it's valid PCM, longer than the 1s
+        # raw-duration floor — the rejection must come from the VAD trim, not
+        # from decode()'s length check).
+        rng = np.random.default_rng(7)
+        quiet = (1e-4 * rng.standard_normal(48000)).astype(np.float32)
+        buf = io.BytesIO()
+        sf.write(buf, quiet, 16000, format="WAV")
+
+        with pytest.raises(AudioTooShortError):
+            compute_embedding(buf.getvalue())
+
+
+# ---------------------------------------------------------------------------
 # Canonical-embedding cache (the only thing we cache, and only because it
 # changes solely on re-enrollment)
 # ---------------------------------------------------------------------------

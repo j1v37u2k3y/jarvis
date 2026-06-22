@@ -1,0 +1,39 @@
+# Dependabot version updates — routine bumps so dependencies don't rot into
+# CVEs in the first place. (Dependabot *security* alerts + auto-fix PRs are
+# enabled via repo settings, not this file, and fire regardless of schedule.)
+#
+# Grouped per ecosystem into one weekly PR each to keep noise low for a
+# solo maintainer; open-pull-requests-limit caps it further.
+version: 2
+updates:
+  # Python — root requirements.txt / requirements-dev.txt
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      python:
+        patterns: ["*"]
+
+  # Frontend — frontend/package.json
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      frontend:
+        patterns: ["*"]
+
+  # GitHub Actions — pinned action versions in .github/workflows
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]

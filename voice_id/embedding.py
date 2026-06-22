@@ -10,7 +10,7 @@ import threading
 
 import numpy as np
 
-from .wav import decode
+from .wav import TARGET_SAMPLE_RATE, AudioTooShortError, decode
 
 log = logging.getLogger("jarvis.voice_id.embedding")
 
@@ -37,11 +37,34 @@ def _get_encoder():
 
 
 def compute_embedding(audio_bytes: bytes) -> np.ndarray:
-    """Decode audio + produce a 256-dim float32 embedding.
+    """Decode audio, preprocess, and produce a 256-dim float32 embedding.
 
-    Raises wav.AudioTooShortError if the clip is too short to embed.
+    resemblyzer's ``embed_utterance`` expects a *preprocessed* waveform — its
+    own docstring says so — meaning volume-normalized and VAD silence-trimmed
+    (see ``resemblyzer.preprocess_wav``). We previously handed it the raw
+    decoded audio, which let trailing silence in a runtime ``snapshot(N)`` clip
+    dilute the embedding toward a generic "quiet room" centroid and collapse
+    the gap between the enrolled owner and other speakers — i.e. false accepts.
+    Enrollment escaped this because those clips are VAD-cropped on the frontend;
+    runtime snapshots are not. Routing both through preprocess_wav makes the two
+    paths consistent and re-opens the separation.
+
+    Raises ``wav.AudioTooShortError`` if the clip is too short to embed — which
+    now includes the case where VAD trimming leaves too little voiced audio
+    (e.g. a snapshot that was almost entirely silence). The voice handler wraps
+    verification in try/except and drops the command, so this fails closed.
     """
+    from resemblyzer import preprocess_wav
+
     audio = decode(audio_bytes)
+    # Volume-normalize + trim long silences (webrtcvad). source_sr is omitted
+    # because decode() already returns 16kHz, so no resampling happens here.
+    processed = preprocess_wav(audio)
+    if len(processed) < TARGET_SAMPLE_RATE // 2:  # <0.5s voiced after trimming
+        raise AudioTooShortError(
+            f"Only {len(processed) / TARGET_SAMPLE_RATE:.2f}s of voiced audio after VAD trim — "
+            "no usable speech in the clip"
+        )
     encoder = _get_encoder()
-    embedding = encoder.embed_utterance(audio)
+    embedding = encoder.embed_utterance(processed)
     return embedding.astype(np.float32, copy=False)
