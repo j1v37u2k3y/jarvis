@@ -22,13 +22,28 @@ from .storage import get_canonical_embedding
 log = logging.getLogger("jarvis.voice_id.verify")
 
 # Cosine similarity threshold. Resemblyzer's textbook same-speaker range is
-# 0.75–0.95, but real-world Chrome-captured runtime clips land at 0.65–0.75
-# — shorter, AGC-touched audio embeds further from the canonical mean than
-# the cleanly-VAD-cropped enrollment samples do. Cross-speaker stays at
-# 0.0–0.5, so 0.65 keeps a comfortable gap. Re-tune if you start seeing
-# false-accepts on a different voice — every decision now logs its similarity
-# at INFO (see verify_speaker), so the runtime distribution is observable.
-VERIFY_THRESHOLD = 0.65
+# 0.75–0.95, cross-speaker 0.0–0.5. The old 0.65 was set low to compensate
+# for runtime clips scoring far below enrollment — but that gap turned out to
+# be a BUG, not a fact of life: compute_embedding was skipping preprocess_wav,
+# so trailing silence in snapshot(N) clips diluted the embedding and dragged
+# the owner's runtime score down into impostor range (family members got in).
+# With preprocessing fixed (embedding.py), runtime and enrollment now embed
+# consistently, so the bands separate again and we can afford a stricter gate.
+#
+# VALIDATED 2026-06-21 against a live family repro (logged to
+# /tmp/jarvis-backend.log) after a clean 3-sample re-enrollment:
+#   owner accepts: 0.733–0.857 (floor 0.733)
+#   3 kids:        0.553–0.662 (ceiling 0.662)
+#   gap +0.071, midpoint 0.698 — fully separable, zero overlap.
+# Set to 0.72 (above the midpoint) to favor keeping kids out over owner
+# convenience: a false reject just costs a repeated command; a false accept
+# means a kid drives JARVIS. TRADE-OFF: at 0.72 the owner's margin is only
+# ~0.013 on a thin 3-sample profile, so occasional self-rejects are expected.
+# The fix for that is NOT lowering this — it's ENROLLING MORE SAMPLES (8–10):
+# a richer canonical raises the owner's floor and widens the margin, after
+# which 0.72 sits comfortably. Every decision logs its similarity at INFO;
+# re-measure from the log if the distribution shifts.
+VERIFY_THRESHOLD = 0.72
 
 
 @dataclass(frozen=True, slots=True)
