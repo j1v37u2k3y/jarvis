@@ -269,6 +269,125 @@ class TestCanonicalCache:
 
 
 # ---------------------------------------------------------------------------
+# Persistent enrollment — raw-audio retention + pipeline-change auto-rebuild
+# ---------------------------------------------------------------------------
+
+
+class TestPersistentEnrollment:
+    """Enrollment retains the raw WAV so the profile can be re-embedded from
+    audio after a pipeline change — the owner enrolls once, the system self-heals
+    on the next start instead of forcing a re-record at the mic.
+    """
+
+    @staticmethod
+    def _sample_audio_present(name: str = "tom") -> tuple[int, int]:
+        """Returns (samples_with_audio, total_samples) for the named profile."""
+        import sqlite3
+
+        from voice_id import storage
+
+        conn = sqlite3.connect(str(storage.DB_PATH))
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+            with_audio = conn.execute("SELECT COUNT(*) FROM samples WHERE audio IS NOT NULL").fetchone()[0]
+            return with_audio, total
+        finally:
+            conn.close()
+
+    def test_enroll_retains_raw_audio(self, isolated_voice_id):
+        from voice_id import enroll_sample
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+        enroll_sample(_synth_wav("speaker_a", 2), "tom")
+        with_audio, total = self._sample_audio_present()
+        assert total == 2
+        assert with_audio == 2, "every enrolled sample must retain its raw audio for rebuild"
+
+    def test_enroll_stamps_pipeline_fingerprint(self, isolated_voice_id):
+        import sqlite3
+
+        from voice_id import enroll_sample, storage
+        from voice_id.embedding import pipeline_fingerprint
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+        conn = sqlite3.connect(str(storage.DB_PATH))
+        try:
+            conn.row_factory = sqlite3.Row
+            stored = conn.execute("SELECT value FROM meta WHERE key = 'pipeline_fingerprint'").fetchone()
+        finally:
+            conn.close()
+        assert stored is not None
+        assert stored["value"] == pipeline_fingerprint()
+
+    def test_rebuild_reembeds_from_audio(self, isolated_voice_id):
+        """rebuild_embeddings recomputes embeddings from retained audio. After
+        zeroing a stored embedding, rebuild restores a valid (non-zero) one that
+        still verifies the owner."""
+        import sqlite3
+
+        import numpy as np
+
+        from voice_id import enroll_sample, rebuild_embeddings, storage, verify_speaker
+        from voice_id.embedding import EMBEDDING_DIM
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+        enroll_sample(_synth_wav("speaker_a", 2), "tom")
+
+        # Corrupt a stored embedding to prove rebuild actually recomputes it.
+        zero = np.zeros(EMBEDDING_DIM, dtype=np.float32).tobytes()
+        conn = sqlite3.connect(str(storage.DB_PATH))
+        try:
+            conn.execute("UPDATE samples SET embedding = ? WHERE id = (SELECT MIN(id) FROM samples)", (zero,))
+            conn.commit()
+        finally:
+            conn.close()
+        storage.invalidate_canonical()
+
+        rebuilt = rebuild_embeddings()
+        assert rebuilt == 2
+
+        # The corrupted embedding is restored: owner still verifies.
+        result = verify_speaker(_synth_wav("speaker_a", 99))
+        assert result.recognized, f"owner rejected after rebuild (sim={result.similarity:.3f})"
+
+    def test_pipeline_change_triggers_auto_rebuild(self, isolated_voice_id, monkeypatch):
+        from voice_id import enroll_sample, maybe_rebuild_on_pipeline_change, storage
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+        enroll_sample(_synth_wav("speaker_a", 2), "tom")
+
+        # Same pipeline → no-op.
+        assert maybe_rebuild_on_pipeline_change() == 0
+
+        # Simulate a pipeline change: the fingerprint now differs from what was
+        # stamped at enrollment, so startup should re-embed from retained audio.
+        monkeypatch.setattr(storage, "pipeline_fingerprint", lambda: "v999-changed+resemblyzer:test")
+        assert maybe_rebuild_on_pipeline_change() == 2
+
+        # Fingerprint is now stamped current → second call is a no-op.
+        assert maybe_rebuild_on_pipeline_change() == 0
+
+    def test_no_rebuild_without_retained_audio(self, isolated_voice_id, monkeypatch):
+        """A profile whose samples have no retained audio (pre-retention DB)
+        can't be rebuilt — maybe_rebuild is a no-op even if the pipeline changed."""
+        import sqlite3
+
+        from voice_id import enroll_sample, maybe_rebuild_on_pipeline_change, storage
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+        # Strip retained audio to emulate a pre-retention sample.
+        conn = sqlite3.connect(str(storage.DB_PATH))
+        try:
+            conn.execute("UPDATE samples SET audio = NULL")
+            conn.commit()
+        finally:
+            conn.close()
+
+        monkeypatch.setattr(storage, "pipeline_fingerprint", lambda: "v999-changed+resemblyzer:test")
+        assert maybe_rebuild_on_pipeline_change() == 0
+
+
+# ---------------------------------------------------------------------------
 # Clear profile
 # ---------------------------------------------------------------------------
 

@@ -7,6 +7,17 @@ profile is computed as the mean of all stored sample embeddings; we store
 the raw 256-dim float32 vectors as BLOBs (1024 bytes each) rather than
 pre-averaging so users can "add another sample" without recomputing.
 
+Each sample ALSO retains its raw enrollment audio (WAV bytes) in the `audio`
+BLOB column. This is what makes enrollment persistent across pipeline changes:
+when the embedding pipeline changes (see embedding.pipeline_fingerprint), every
+sample is re-embedded from its retained audio — no re-recording at the mic. The
+`meta` key/value table stores the pipeline fingerprint that produced the current
+embeddings so startup can detect a drift and rebuild (maybe_rebuild_on_pipeline_change).
+
+Raw audio is biometric data at rest. It lives only in this local SQLite file
+(data/voice_profiles.db), which is gitignored; cascade-delete on clear_profile
+wipes it with the profile.
+
 Pattern mirrors memory.py:21-28 (data/ directory, WAL journal, lazy
 CREATE TABLE IF NOT EXISTS on first call).
 """
@@ -19,7 +30,7 @@ from typing import TypedDict
 
 import numpy as np
 
-from .embedding import compute_embedding
+from .embedding import compute_embedding, pipeline_fingerprint
 
 log = logging.getLogger("jarvis.voice_id.storage")
 
@@ -68,14 +79,39 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY,
                 profile_id INTEGER NOT NULL,
                 embedding BLOB NOT NULL,
+                audio BLOB,
                 created_at REAL NOT NULL,
                 FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_samples_profile ON samples(profile_id);
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         """)
+        # Migration for DBs created before audio retention: add the column if a
+        # pre-existing samples table lacks it. (CREATE TABLE above only applies
+        # to fresh DBs.) Samples enrolled before this migration have audio=NULL
+        # and can't be re-embedded — they're skipped by rebuild_embeddings().
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(samples)").fetchall()}
+        if "audio" not in cols:
+            conn.execute("ALTER TABLE samples ADD COLUMN audio BLOB")
+            log.info("Migrated samples table: added audio BLOB column for enrollment retention")
         conn.commit()
     finally:
         conn.close()
+
+
+def _get_meta(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def _set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
 
 
 def enroll_sample(audio_bytes: bytes, name: str) -> int:
@@ -99,10 +135,15 @@ def enroll_sample(audio_bytes: bytes, name: str) -> int:
                 (name, now),
             )
             profile_id = cur.lastrowid
+        # Retain the raw WAV alongside the embedding so the profile can be
+        # rebuilt from audio after a pipeline change without re-recording.
         conn.execute(
-            "INSERT INTO samples (profile_id, embedding, created_at) VALUES (?, ?, ?)",
-            (profile_id, embedding.tobytes(), now),
+            "INSERT INTO samples (profile_id, embedding, audio, created_at) VALUES (?, ?, ?, ?)",
+            (profile_id, embedding.tobytes(), sqlite3.Binary(audio_bytes), now),
         )
+        # Stamp the pipeline that produced this embedding so startup can detect
+        # drift later. Freshly enrolled samples are always on the current pipeline.
+        _set_meta(conn, "pipeline_fingerprint", pipeline_fingerprint())
         conn.commit()
         count = conn.execute("SELECT COUNT(*) AS n FROM samples WHERE profile_id = ?", (profile_id,)).fetchone()["n"]
         log.info(f"Enrolled sample for {name!r} (total: {count})")
@@ -210,3 +251,63 @@ def clear_profile(name: str | None = None) -> None:
         log.info(f"Cleared profile: {name or '(all)'}")
     finally:
         conn.close()
+
+
+def rebuild_embeddings() -> int:
+    """Recompute every stored sample's embedding from its retained raw audio
+    using the CURRENT pipeline, then stamp the current pipeline fingerprint.
+
+    This is how enrollment survives a pipeline change without re-recording:
+    the audio is the source of truth, embeddings are derived. Returns the number
+    of samples re-embedded. Samples with no retained audio (enrolled before audio
+    retention existed) are skipped with a warning — those need a manual re-enroll.
+    """
+    init_db()
+    conn = _get_db()
+    try:
+        rows = conn.execute("SELECT id, audio FROM samples").fetchall()
+        rebuilt = 0
+        skipped = 0
+        for row in rows:
+            audio = row["audio"]
+            if audio is None:
+                skipped += 1
+                continue
+            emb = compute_embedding(bytes(audio))
+            conn.execute("UPDATE samples SET embedding = ? WHERE id = ?", (emb.tobytes(), row["id"]))
+            rebuilt += 1
+        _set_meta(conn, "pipeline_fingerprint", pipeline_fingerprint())
+        conn.commit()
+        if skipped:
+            log.warning(f"rebuild_embeddings: skipped {skipped} sample(s) with no retained audio — re-enroll needed")
+        log.info(f"rebuild_embeddings: re-embedded {rebuilt} sample(s) on pipeline {pipeline_fingerprint()}")
+        invalidate_canonical()
+        return rebuilt
+    finally:
+        conn.close()
+
+
+def maybe_rebuild_on_pipeline_change() -> int:
+    """Startup hook: if the embedding pipeline changed since the stored samples
+    were embedded, re-embed them from retained audio. No-op (returns 0) when the
+    fingerprint matches (the common case) or when no retained audio exists.
+
+    This is the 'persistent mechanism' — the owner enrolls once; any later
+    pipeline change (a preprocess tweak, a resemblyzer upgrade) self-heals on the
+    next server start instead of dragging the owner back to the mic.
+    """
+    init_db()
+    conn = _get_db()
+    try:
+        stored = _get_meta(conn, "pipeline_fingerprint")
+        has_audio = conn.execute("SELECT 1 FROM samples WHERE audio IS NOT NULL LIMIT 1").fetchone() is not None
+    finally:
+        conn.close()
+
+    current = pipeline_fingerprint()
+    if not has_audio:
+        return 0  # nothing rebuildable (no profile, or pre-retention samples only)
+    if stored == current:
+        return 0  # pipeline unchanged
+    log.info(f"Voice pipeline changed ({stored!r} -> {current!r}); re-embedding stored samples from retained audio")
+    return rebuild_embeddings()

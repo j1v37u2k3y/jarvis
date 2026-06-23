@@ -237,7 +237,7 @@ function buildPanelHTML(): string {
           <h3>Voice Recognition</h3>
           <p class="voice-id-help" id="voice-id-help">
             JARVIS can recognize your voice and ignore commands from anyone else.
-            Record 3 short samples to enroll.
+            Record 8 short samples to enroll.
           </p>
           <div class="voice-id-status" id="voice-id-status"></div>
           <div class="voice-id-wizard" id="voice-id-wizard" style="display:none"></div>
@@ -419,10 +419,18 @@ function wireEvents() {
 // Voice enrollment
 // ---------------------------------------------------------------------------
 
+// Eight varied phrases. More samples + phonetic variety = a richer canonical
+// embedding, a higher owner-accept floor, and a wider margin over impostors at
+// the verify threshold (a thin 3-sample profile left the owner at ~+0.013).
 const ENROLLMENT_PROMPTS = [
   "JARVIS, this is me speaking.",
   "Good morning, JARVIS.",
   "Run a status check on all systems.",
+  "What's on my calendar today?",
+  "Open my development environment.",
+  "Give me the weather forecast.",
+  "Pull up my latest projects.",
+  "Thank you, JARVIS. That will be all.",
 ];
 
 async function loadVoiceStatus() {

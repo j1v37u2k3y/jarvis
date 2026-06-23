@@ -229,6 +229,18 @@ async def lifespan(application: FastAPI):
     else:
         log.info("Mission Control not reachable — tasks will use fallback dispatch")
 
+    # Re-embed stored voice samples if the embedding pipeline changed since they
+    # were enrolled. Keeps the speaker-ID profile valid across pipeline changes
+    # (preprocess tweaks, resemblyzer upgrades) without dragging the owner back
+    # to the mic. No-op when the fingerprint matches (the common case). Run in a
+    # thread so the (rare) re-embed + model load doesn't block the event loop.
+    try:
+        rebuilt = await asyncio.to_thread(voice_id.maybe_rebuild_on_pipeline_change)
+        if rebuilt:
+            log.info(f"Voice-ID: re-embedded {rebuilt} sample(s) from retained audio after a pipeline change")
+    except Exception as e:
+        log.warning(f"Voice-ID pipeline-change rebuild skipped: {e}")
+
     # Start MC inbox watcher (notifies user when MC agents finish tasks)
     inbox_task = asyncio.create_task(watch_inbox(task_manager._notify))
 
