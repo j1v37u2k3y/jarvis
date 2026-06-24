@@ -407,8 +407,16 @@ function wireEvents() {
   // Voice enrollment
   document.getElementById("btn-voice-enroll")?.addEventListener("click", runVoiceEnrollment);
   document.getElementById("btn-voice-clear")?.addEventListener("click", async () => {
+    // "Clear & Re-enroll" must do BOTH: wipe the existing profile, then start a
+    // fresh recording wizard. Previously it only cleared, so users clicked the
+    // separate "Add More Samples" button instead and stacked samples onto the
+    // old profile. Confirm first — clearing deletes all stored samples.
+    if (!confirm("Clear your saved voice profile and re-record from scratch? This deletes all current samples.")) {
+      return;
+    }
     await clearVoiceProfile();
     await loadVoiceStatus();
+    await runVoiceEnrollment();
   });
 
   // Setup next button
@@ -451,7 +459,9 @@ function renderVoiceStatus(status: VoiceStatus) {
 
   if (status.enrolled) {
     statusEl.innerHTML = `<span class="status-dot status-green"></span> Enrolled as <strong>${escapeHtml(status.name ?? "")}</strong> — ${status.sample_count} sample${status.sample_count === 1 ? "" : "s"}`;
-    enrollBtn.textContent = "Add Another Sample";
+    // The enroll button runs the full multi-prompt wizard and ADDS its samples
+    // to the profile — name it honestly so it isn't mistaken for a one-shot add.
+    enrollBtn.textContent = "Add More Samples";
     clearBtn.style.display = "inline-block";
     if (helpEl) helpEl.style.display = "none";
   } else {
