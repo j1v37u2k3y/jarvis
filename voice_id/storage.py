@@ -253,6 +253,29 @@ def clear_profile(name: str | None = None) -> None:
         conn.close()
 
 
+def prune_unrebuildable() -> int:
+    """Delete samples that have no retained audio.
+
+    Such samples predate audio retention; they can't be re-embedded when the
+    pipeline changes, so they can't be part of a persistent profile and would
+    only contaminate the canonical mean across a pipeline change. Returns the
+    number pruned. Profiles left with zero samples are removed too, so status
+    reflects reality.
+    """
+    init_db()
+    conn = _get_db()
+    try:
+        deleted = conn.execute("DELETE FROM samples WHERE audio IS NULL").rowcount
+        # Drop now-empty profiles so get_status doesn't report a phantom profile.
+        conn.execute("DELETE FROM profiles WHERE id NOT IN (SELECT DISTINCT profile_id FROM samples)")
+        conn.commit()
+        invalidate_canonical()
+        log.info(f"prune_unrebuildable: removed {deleted} sample(s) with no retained audio")
+        return deleted
+    finally:
+        conn.close()
+
+
 def rebuild_embeddings() -> int:
     """Recompute every stored sample's embedding from its retained raw audio
     using the CURRENT pipeline, then stamp the current pipeline fingerprint.

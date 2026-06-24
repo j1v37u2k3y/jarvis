@@ -17,6 +17,7 @@ from .storage import (
     get_status,
     is_enrolled,
     maybe_rebuild_on_pipeline_change,
+    prune_unrebuildable,
     rebuild_embeddings,
 )
 from .verify import VerifyResult, should_verify_speaker, verify_speaker
@@ -28,6 +29,7 @@ __all__ = [
     "get_status",
     "is_enrolled",
     "maybe_rebuild_on_pipeline_change",
+    "prune_unrebuildable",
     "rebuild_embeddings",
     "should_verify_speaker",
     "verify_speaker",

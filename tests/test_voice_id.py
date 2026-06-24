@@ -367,6 +367,59 @@ class TestPersistentEnrollment:
         # Fingerprint is now stamped current → second call is a no-op.
         assert maybe_rebuild_on_pipeline_change() == 0
 
+    def test_prune_removes_audioless_keeps_audio(self, isolated_voice_id):
+        """prune_unrebuildable drops samples with no retained audio (legacy,
+        unrebuildable) and keeps the audio-bearing ones — the cleanup for a
+        profile that mixed pre-retention and retention-era samples."""
+        import sqlite3
+
+        from voice_id import enroll_sample, get_status, prune_unrebuildable, storage
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+        enroll_sample(_synth_wav("speaker_a", 2), "tom")
+        # Inject two legacy rows with NULL audio under the same profile.
+        conn = sqlite3.connect(str(storage.DB_PATH))
+        try:
+            pid = conn.execute("SELECT id FROM profiles WHERE name='tom'").fetchone()[0]
+            import numpy as np
+
+            blob = np.zeros(256, dtype=np.float32).tobytes()
+            conn.execute(
+                "INSERT INTO samples (profile_id, embedding, audio, created_at) VALUES (?, ?, NULL, 0)", (pid, blob)
+            )
+            conn.execute(
+                "INSERT INTO samples (profile_id, embedding, audio, created_at) VALUES (?, ?, NULL, 0)", (pid, blob)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        assert get_status()["sample_count"] == 4
+
+        pruned = prune_unrebuildable()
+        assert pruned == 2
+        status = get_status()
+        assert status["sample_count"] == 2, "only the 2 audio-bearing samples should remain"
+        assert status["enrolled"]
+
+    def test_prune_drops_profile_when_all_audioless(self, isolated_voice_id):
+        """If pruning leaves a profile with zero samples, the profile row is
+        removed too so status reports not-enrolled (no phantom profile)."""
+        import sqlite3
+
+        from voice_id import enroll_sample, get_status, prune_unrebuildable, storage
+
+        enroll_sample(_synth_wav("speaker_a", 1), "tom")
+        # Strip audio from the only sample → it's now unrebuildable legacy.
+        conn = sqlite3.connect(str(storage.DB_PATH))
+        try:
+            conn.execute("UPDATE samples SET audio = NULL")
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert prune_unrebuildable() == 1
+        assert get_status() == {"enrolled": False, "name": None, "sample_count": 0}
+
     def test_no_rebuild_without_retained_audio(self, isolated_voice_id, monkeypatch):
         """A profile whose samples have no retained audio (pre-retention DB)
         can't be rebuilt — maybe_rebuild is a no-op even if the pipeline changed."""
