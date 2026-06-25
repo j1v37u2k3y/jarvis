@@ -7,6 +7,7 @@ download on first import; ~20ms per embedding on CPU after that.
 
 import logging
 import threading
+from importlib.metadata import version as _pkg_version
 
 import numpy as np
 
@@ -15,6 +16,28 @@ from .wav import TARGET_SAMPLE_RATE, AudioTooShortError, decode
 log = logging.getLogger("jarvis.voice_id.embedding")
 
 EMBEDDING_DIM = 256
+
+# Bump this whenever compute_embedding's behavior changes in a way that shifts
+# the embedding space (e.g. adding/removing preprocess_wav, changing the VAD
+# trim, swapping the model). It's folded into pipeline_fingerprint() together
+# with the installed resemblyzer version; when the fingerprint changes, stored
+# profiles are auto-re-embedded from their retained audio on startup (see
+# storage.maybe_rebuild_on_pipeline_change) — no re-recording at the mic.
+#   v1 = raw audio -> embed_utterance (the false-accept bug)
+#   v2 = preprocess_wav (normalize + VAD-trim) -> embed_utterance
+PIPELINE_VERSION = "v2-preprocess_wav"
+
+
+def pipeline_fingerprint() -> str:
+    """Stable identifier for the current embedding pipeline. Changes when the
+    embedding space shifts (PIPELINE_VERSION bump or a resemblyzer upgrade),
+    which triggers an auto re-embed of stored samples from retained audio."""
+    try:
+        rv = _pkg_version("resemblyzer")
+    except Exception:  # noqa: BLE001 — any metadata failure -> opaque token, still stable per env
+        rv = "unknown"
+    return f"{PIPELINE_VERSION}+resemblyzer:{rv}"
+
 
 # Lazy-loaded singleton so importing this module is cheap — the model
 # only loads when we actually compute an embedding.

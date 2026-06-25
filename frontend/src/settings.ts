@@ -237,7 +237,7 @@ function buildPanelHTML(): string {
           <h3>Voice Recognition</h3>
           <p class="voice-id-help" id="voice-id-help">
             JARVIS can recognize your voice and ignore commands from anyone else.
-            Record 3 short samples to enroll.
+            Record 8 short samples to enroll.
           </p>
           <div class="voice-id-status" id="voice-id-status"></div>
           <div class="voice-id-wizard" id="voice-id-wizard" style="display:none"></div>
@@ -407,8 +407,16 @@ function wireEvents() {
   // Voice enrollment
   document.getElementById("btn-voice-enroll")?.addEventListener("click", runVoiceEnrollment);
   document.getElementById("btn-voice-clear")?.addEventListener("click", async () => {
+    // "Clear & Re-enroll" must do BOTH: wipe the existing profile, then start a
+    // fresh recording wizard. Previously it only cleared, so users clicked the
+    // separate "Add More Samples" button instead and stacked samples onto the
+    // old profile. Confirm first — clearing deletes all stored samples.
+    if (!confirm("Clear your saved voice profile and re-record from scratch? This deletes all current samples.")) {
+      return;
+    }
     await clearVoiceProfile();
     await loadVoiceStatus();
+    await runVoiceEnrollment();
   });
 
   // Setup next button
@@ -419,10 +427,18 @@ function wireEvents() {
 // Voice enrollment
 // ---------------------------------------------------------------------------
 
+// Eight varied phrases. More samples + phonetic variety = a richer canonical
+// embedding, a higher owner-accept floor, and a wider margin over impostors at
+// the verify threshold (a thin 3-sample profile left the owner at ~+0.013).
 const ENROLLMENT_PROMPTS = [
   "JARVIS, this is me speaking.",
   "Good morning, JARVIS.",
   "Run a status check on all systems.",
+  "What's on my calendar today?",
+  "Open my development environment.",
+  "Give me the weather forecast.",
+  "Pull up my latest projects.",
+  "Thank you, JARVIS. That will be all.",
 ];
 
 async function loadVoiceStatus() {
@@ -443,7 +459,9 @@ function renderVoiceStatus(status: VoiceStatus) {
 
   if (status.enrolled) {
     statusEl.innerHTML = `<span class="status-dot status-green"></span> Enrolled as <strong>${escapeHtml(status.name ?? "")}</strong> — ${status.sample_count} sample${status.sample_count === 1 ? "" : "s"}`;
-    enrollBtn.textContent = "Add Another Sample";
+    // The enroll button runs the full multi-prompt wizard and ADDS its samples
+    // to the profile — name it honestly so it isn't mistaken for a one-shot add.
+    enrollBtn.textContent = "Add More Samples";
     clearBtn.style.display = "inline-block";
     if (helpEl) helpEl.style.display = "none";
   } else {
